@@ -1,0 +1,12 @@
+{
+  "profile": "set DATABRICKS_CONFIG_PROFILE to your Databricks CLI profile",
+  "catalog": "larkwell_osa",
+  "business_date": "2026-10-17",
+  "seed": 20261017,
+  "warehouse_id": "148ccb90800933a1",
+  "llm_endpoint": "databricks-claude-sonnet-4-5",
+  "lakebase_project": "larkwell-osa",
+  "lakebase_catalog": "larkwell_osa_pg",
+  "app_name": "larkwell-shelf-availability",
+  "workspace_folder": "larkwell-shelf-availability"
+}

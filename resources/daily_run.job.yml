@@ -1,0 +1,60 @@
+resources:
+  jobs:
+    daily_run:
+      name: Larkwell shelf availability - daily run
+      description: >
+        The whole data journey for one trading day: land the raw feeds, run the Lakeflow pipeline, refresh the
+        Lakebase copy, check every stage against the answer key, then evaluate the AI's next best action.
+      max_concurrent_runs: 1
+      parameters:
+        - name: business_date
+          default: ${var.business_date}
+      schedule:
+        quartz_cron_expression: "0 0 5 * * ?"
+        timezone_id: Europe/London
+        pause_status: PAUSED
+      tags:
+        project: larkwell-shelf-availability
+        data: synthetic
+      tasks:
+        - task_key: land_raw_feeds
+          notebook_task:
+            notebook_path: ../data/01_land_raw_feeds.py
+            base_parameters:
+              catalog: ${var.catalog}
+              business_date: "{{job.parameters.business_date}}"
+              seed: ${var.seed}
+          timeout_seconds: 3600
+        - task_key: run_pipeline
+          depends_on:
+            - task_key: land_raw_feeds
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.availability_pipeline.id}
+        - task_key: refresh_lakebase
+          depends_on:
+            - task_key: run_pipeline
+          pipeline_task:
+            pipeline_id: ${var.lakebase_sync_pipeline_id}
+        - task_key: validate_and_publish
+          depends_on:
+            - task_key: refresh_lakebase
+          notebook_task:
+            notebook_path: ../data/02_validate_and_publish.py
+            base_parameters:
+              catalog: ${var.catalog}
+              business_date: "{{job.parameters.business_date}}"
+              pipeline_id: ${resources.pipelines.availability_pipeline.id}
+              lakebase_catalog: ${var.catalog}_pg
+          timeout_seconds: 1800
+        - task_key: evaluate_next_best_action
+          depends_on:
+            - task_key: validate_and_publish
+          notebook_task:
+            notebook_path: ../genai/03_evaluate_next_best_action.py
+            base_parameters:
+              catalog: ${var.catalog}
+              llm_endpoint: ${var.llm_endpoint}
+              judge_model: databricks:/${var.judge_endpoint}
+              app_source: ${workspace.file_path}/app
+              cases_per_reason: "6"
+          timeout_seconds: 2700

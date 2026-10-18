@@ -1,0 +1,31 @@
+resources:
+  apps:
+    shelf_availability:
+      name: larkwell-shelf-availability
+      description: >
+        Larkwell Shelf Availability: root causes of empty shelves, served from Lakebase, with Genie and Gen AI.
+        Fictitious retailer, synthetic data.
+      source_code_path: ../app
+      resources:
+        - name: warehouse
+          description: SQL warehouse for dashboards and drill-downs
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: llm
+          description: Foundation model that words the next best action
+          serving_endpoint:
+            name: ${var.llm_endpoint}
+            permission: CAN_QUERY
+        - name: genie
+          description: Genie space for Ask the data
+          genie_space:
+            name: Larkwell Shelf Availability
+            space_id: ${var.genie_space_id}
+            permission: CAN_RUN
+        - name: postgres
+          description: Lakebase database for Shelf Scan lookups and colleague actions
+          postgres:
+            branch: projects/larkwell-osa/branches/production
+            database: projects/larkwell-osa/branches/production/databases/databricks-postgres
+            permission: CAN_CONNECT_AND_CREATE

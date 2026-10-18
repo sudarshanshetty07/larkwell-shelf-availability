@@ -1,0 +1,19 @@
+resources:
+  pipelines:
+    availability_pipeline:
+      name: larkwell_osa_availability
+      catalog: ${var.catalog}
+      schema: bronze
+      serverless: true
+      continuous: false
+      development: false
+      channel: CURRENT
+      root_path: ../pipeline
+      libraries:
+        - glob:
+            include: ../pipeline/**
+      configuration:
+        landing_root: /Volumes/${var.catalog}/raw/landing
+      tags:
+        project: larkwell-shelf-availability
+        data: synthetic
