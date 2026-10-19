@@ -1,10 +1,65 @@
 # Lakeflow Jobs: the daily run, end to end
 
-_Generated 2026-10-18 14:18 UTC by `scripts/collect_evidence.py` from the live workspace. Larkwell Foods is fictitious; all data is synthetic._
+_Generated 2026-10-19 08:08 UTC by `scripts/collect_evidence.py` from the live workspace. Larkwell Foods is fictitious; all data is synthetic._
 
-The bundle job `Larkwell shelf availability - daily run` (`resources/daily_run.job.yml`) runs the whole journey for one trading day: land the raw feeds, run the Lakeflow pipeline, refresh the Lakebase copy, check every stage, then evaluate the AI. Its schedule (05:00 Europe/London) is paused in this demo workspace.
+The bundle job `Larkwell shelf availability - daily run` (`resources/daily_run.job.yml`) runs the whole journey for one trading day: land the raw feeds, run the Lakeflow pipeline, refresh the Lakebase copy and check every stage. Then, side by side, it grades yesterday's gap-risk predictions and predicts tomorrow's, and evaluates the AI. Its schedule (05:00 Europe/London) is paused in this demo workspace.
 
 The trading days are simulated: the job takes the business date as a parameter, so consecutive trading days were run back to back. A repair re-runs only the failed tasks. It doesn't carry run-time parameters over, so the business date has to be passed again, and validation now refuses to run if it isn't.
+
+## Run 71896079340494: SUCCESS (business date 2026-10-19)
+
+| attempt | task | result | duration | why it failed |
+|---|---|---|---|---|
+| original run | predict_gap_risk | SUCCESS | 668s |  |
+| original run | evaluate_next_best_action | DISABLED | 0s |  |
+| original run | land_raw_feeds | DISABLED | 0s |  |
+| original run | refresh_lakebase | DISABLED | 0s |  |
+| original run | run_pipeline | DISABLED | 0s |  |
+| original run | validate_and_publish | DISABLED | 0s |  |
+
+## Run 1001434075546980: SUCCESS (business date 2026-10-14)
+
+| attempt | task | result | duration | why it failed |
+|---|---|---|---|---|
+| original run | predict_gap_risk | SUCCESS | 673s |  |
+| original run | evaluate_next_best_action | DISABLED | 0s |  |
+| original run | land_raw_feeds | DISABLED | 0s |  |
+| original run | refresh_lakebase | DISABLED | 0s |  |
+| original run | run_pipeline | DISABLED | 0s |  |
+| original run | validate_and_publish | DISABLED | 0s |  |
+
+## Run 483525442664275: SUCCESS (business date 2026-10-13)
+
+| attempt | task | result | duration | why it failed |
+|---|---|---|---|---|
+| original run | predict_gap_risk | SUCCESS | 664s |  |
+| original run | evaluate_next_best_action | DISABLED | 0s |  |
+| original run | land_raw_feeds | DISABLED | 0s |  |
+| original run | refresh_lakebase | DISABLED | 0s |  |
+| original run | run_pipeline | DISABLED | 0s |  |
+| original run | validate_and_publish | DISABLED | 0s |  |
+
+## Run 803364704777197: SUCCESS (business date 2026-10-12)
+
+| attempt | task | result | duration | why it failed |
+|---|---|---|---|---|
+| original run | predict_gap_risk | SUCCESS | 681s |  |
+| original run | evaluate_next_best_action | DISABLED | 0s |  |
+| original run | land_raw_feeds | DISABLED | 0s |  |
+| original run | refresh_lakebase | DISABLED | 0s |  |
+| original run | run_pipeline | DISABLED | 0s |  |
+| original run | validate_and_publish | DISABLED | 0s |  |
+
+## Run 1033527372912772: SUCCESS (business date 2026-10-19)
+
+| attempt | task | result | duration | why it failed |
+|---|---|---|---|---|
+| original run | land_raw_feeds | SUCCESS | 109s |  |
+| original run | run_pipeline | SUCCESS | 105s |  |
+| original run | refresh_lakebase | SUCCESS | 33s |  |
+| original run | validate_and_publish | SUCCESS | 89s |  |
+| original run | evaluate_next_best_action | SUCCESS | 193s |  |
+| original run | predict_gap_risk | SUCCESS | 678s |  |
 
 ## Run 87621466072770: SUCCESS (business date 2026-10-19)
 
@@ -88,6 +143,32 @@ The trading days are simulated: the job takes the business date as a parameter, 
 | repair 2 | evaluate_next_best_action | FAILED | 156s | AssertionError: Below threshold: ['plain_english', 'consistent_with_playbook'] |
 | repair 3 | evaluate_next_best_action | FAILED | 123s | AssertionError: Below threshold: ['plain_english'] |
 | repair 3 | evaluate_next_best_action | SUCCESS | 156s |  |
+
+# The history backfill and the weekly training job
+
+`Larkwell shelf availability - history backfill` (`resources/history_backfill.job.yml`) ran once, when the generator gained day-to-day history. It landed 35 trading days before the anchor, six at a time, rebuilt the pipeline from every file (a full refresh), checked the anchor day end to end, trained the gap-risk model, and replayed its daily predictions over the test week, one day at a time, so that each of those mornings is graded.
+
+## Run 291893668207304: SUCCESS (history backfill)
+
+| attempt | task | result | duration | why it failed |
+|---|---|---|---|---|
+| original run | replay_predictions | UPSTREAM_CANCELED | 1792374345s |  |
+| original run | land_history | SUCCESS (35 of 35 iterations) | 1318s |  |
+| original run | rebuild_pipeline | SUCCESS | 517s |  |
+| original run | refresh_lakebase | SUCCESS | 195s |  |
+| original run | validate_and_publish | SUCCESS | 95s |  |
+| original run | train_gap_risk | FAILED | 825s | TypeError: Cannot convert tz-naive Timestamp, use tz_localize to localize |
+| original run | train_gap_risk | CANCELED | 90s |  |
+| repair 1 | train_gap_risk | SUCCESS | 1036s |  |
+| repair 1 | replay_predictions | SUCCESS (7 of 7 iterations) | 1550s |  |
+
+**What happened in the backfill:**
+- The 35 history days, the full rebuild of all 36 days, the Lakebase refresh and the anchor day's 43 checks all passed first time.
+- **Training, first attempt:** it trained and tested the model, registered version 1 in Unity Catalog and gave it the `champion` alias, then failed while publishing its evaluation: Spark rejected a pandas timestamp without a time zone. The job retried automatically; the retry was cancelled, because it would have hit the same bug and registered a duplicate.
+- **Repair 1:** after the fix, training ran again and registered version 2. Before taking the alias it had to be no worse than champion version 1 on the same test week. It matched it exactly (same data, same seed), passed every gate, and was promoted. The replay then scored each evening of the test week in date order, so each next morning was graded.
+- The first three replayed evenings were scored before a fix to the reasons (a reason is now shown only when the line's own value makes it true), so they were re-scored afterwards by the daily job's prediction task on its own: the three single-task runs for 12 to 14 October in the daily job's list above. A fourth, for 19 October, corrected two plurals in the reason text ('1 days'). The predictions and grades didn't change.
+
+`Larkwell shelf availability - gap-risk training` (`resources/gap_risk_training.job.yml`) retrains the model every Sunday evening; its schedule is paused in this demo workspace. It hasn't run on its own yet: the first training ran inside the backfill.
 
 ## What each failure caught
 

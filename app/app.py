@@ -10,6 +10,8 @@ Where the data comes from:
 - Colleague actions, scan telemetry, AI recommendations and Genie feedback are written to Lakebase, and Lakehouse
   Sync streams them back to Unity Catalog.
 - Ask the data uses a Genie space. The next best action uses a Databricks-hosted LLM (see nba.py).
+- Tomorrow's watch list reads the gap-risk model's predictions (larkwell_osa.ml.gap_risk_scores), made each day by
+  the champion version of the Unity Catalog model ml.gap_risk, and graded every morning (ops.gap_risk_grades).
 """
 import os
 import re
@@ -40,6 +42,9 @@ WAREHOUSE_ID = os.getenv("DATABRICKS_WAREHOUSE_ID", "")
 GENIE_SPACE_ID = os.getenv("GENIE_SPACE_ID", "")
 CATALOG = os.getenv("UC_CATALOG", "larkwell_osa")
 TABLE = f"{CATALOG}.gold.product_location_status"
+SCORES = f"{CATALOG}.ml.gap_risk_scores"          # gap-risk predictions, one row per product-location per evening
+GRADES = f"{CATALOG}.ops.gap_risk_grades"         # last evening's predictions against this morning's shelves
+EVALUATIONS = f"{CATALOG}.ops.gap_risk_evaluations"
 
 # --- Auth ---
 _token_cache: dict = {"token": "", "expires_at": 0}
@@ -474,7 +479,7 @@ def get_dashboard(
     """
     reasons = execute_sql(reason_sql)
 
-    # --- Pivot mode for Head Office store view ---
+    # --- Pivot mode for the Support Centre store view ---
     issue_cond = _build_issue_filter(issue_filter, low_filter)
     pivot_mode = persona == "support_centre_store"
 
@@ -1009,10 +1014,33 @@ def _pin_peer_compare(store):
     return f"Here's the adjusted peer read for **{store}** ({stg}).\n\n{verdict}\n\n{table}"
 
 
+def _pin_tomorrow(store):
+    """The gap-risk model's latest predictions: lines that look fine now but are likely to be empty tomorrow."""
+    latest = f"(SELECT MAX(business_date) FROM {SCORES})"
+    where = f"store = '{_safe_str(store)}' AND " if store else ""
+    rows = execute_sql(f"SELECT product, store, risk, reason_1, reason_2, model_version, CAST(target_date AS STRING) AS target_date, "
+                       f"CAST(business_date AS STRING) AS predicted_on "
+                       f"FROM {SCORES} WHERE {where}business_date = {latest} AND looks_fine ORDER BY risk DESC LIMIT 6")
+    scope = f"**{store}**" if store else "the estate"
+    if not rows:
+        return f"There are no gap-risk predictions for {scope} yet."
+    hdr = "| Product | Chance it's empty | Why |" if store else "| Product · Store | Chance it's empty | Why |"
+    out = [hdr, "|---|---|---|"]
+    for r in rows:
+        name = _clean_prod(r.get("product")) + ("" if store else f" · {r.get('store') or ''}")
+        why = "; ".join(x for x in (r.get("reason_1"), r.get("reason_2")) if x)
+        out.append(f"| {name} | {round(100 * float(r.get('risk') or 0))}% | {why} |")
+    table = "\n".join(out)
+    return (f"From the gap-risk model (machine learning, version {rows[0].get('model_version')} in Unity Catalog), scored on "
+            f"{rows[0].get('predicted_on')} for {rows[0].get('target_date')}: the lines at {scope} that look fine now but are most likely to be "
+            f"empty in the morning. Worth checking before close.\n\n{table}")
+
+
 PINNED_QA = [
     {"q": "Which products are likely to run out before the next lunch or evening peak - and what can we do now?", "fn": _pin_watchlist},
     {"q": "Which availability issues should we fix in the next hour to protect the most profitable sales?", "fn": _pin_action_queue},
     {"q": "Why is this store performing worse than comparable stores, and what can its team actually control?", "fn": _pin_peer_compare},
+    {"q": "Which lines look fine now but are most likely to be empty tomorrow morning?", "fn": _pin_tomorrow},
 ]
 
 
@@ -1336,6 +1364,56 @@ def api_actions_summary():
     return {"summary": lakebase.action_summary()}
 
 
+# --- Tomorrow's watch list: the gap-risk model's predictions, and how it has been graded ---
+_model_cache: dict = {"ts": 0.0, "card": None}
+
+
+def _gap_risk_model():
+    """The champion's test-week results (from its training run) and the last week of morning grades. Cached for 5 minutes."""
+    if _model_cache["card"] and time.time() - _model_cache["ts"] < 300:
+        return _model_cache["card"]
+    rows = execute_sql(f"""
+        SELECT model_version, CAST(train_from AS STRING) AS train_from, CAST(train_to AS STRING) AS train_to,
+               CAST(test_from AS STRING) AS test_from, CAST(test_to AS STRING) AS test_to, metric, model, today_rule, lowest_cover_rule
+        FROM {EVALUATIONS} WHERE evaluation_id = (SELECT max_by(evaluation_id, evaluated_at) FROM {EVALUATIONS} WHERE promoted)""")
+    if not rows:
+        raise HTTPException(status_code=404, detail="No gap-risk model has been promoted yet")
+    grades = execute_sql(f"""
+        SELECT CAST(graded_date AS STRING) AS graded_date, model_version, auc, list_precision, listed, listed_empty,
+               fine_listed, fine_listed_empty
+        FROM {GRADES} WHERE scope = 'estate' ORDER BY graded_date DESC LIMIT 7""")
+    card = {k: rows[0][k] for k in ("model_version", "train_from", "train_to", "test_from", "test_to")}
+    card.update(model_name="ml.gap_risk", recent_grades=grades,
+                metrics={r["metric"]: {k: r[k] for k in ("model", "today_rule", "lowest_cover_rule")} for r in rows})
+    _model_cache.update(ts=time.time(), card=card)
+    return card
+
+
+@app.get("/api/gap-risk")
+def api_gap_risk(store: str):
+    """Tomorrow's watch list for one store: lines that look fine today but are likely to be empty tomorrow morning, and
+    today's gaps and lows most likely to still be empty, each with the model's reasons."""
+    try:
+        model = _gap_risk_model()
+    except HTTPException as e:
+        logger.warning(f"gap-risk model not available: {e.detail}")
+        return {"available": False}
+    s = _safe_str(store)
+    latest = f"(SELECT MAX(business_date) FROM {SCORES})"
+    cols = ("product, category, status_today, risk, reason_1, reason_2, reason_3, on_hand, ROUND(days_of_cover, 1) AS days_of_cover, "
+            "CAST(business_date AS STRING) AS predicted_on, CAST(target_date AS STRING) AS target_date")
+    new_risk = execute_sql(f"SELECT {cols} FROM {SCORES} WHERE business_date = {latest} AND store = '{s}' AND looks_fine "
+                           f"ORDER BY risk DESC LIMIT 10")
+    fix_first = execute_sql(f"SELECT {cols} FROM {SCORES} WHERE business_date = {latest} AND store = '{s}' AND NOT looks_fine "
+                            f"ORDER BY risk DESC LIMIT 5")
+    grade = execute_sql(f"SELECT CAST(graded_date AS STRING) AS graded_date, listed, listed_empty, fine_listed, fine_listed_empty "
+                        f"FROM {GRADES} WHERE scope = '{s}' ORDER BY graded_date DESC LIMIT 1")
+    first = (new_risk or fix_first or [{}])[0]
+    return {"available": True, "store": store, "model": model, "predicted_on": first.get("predicted_on"),
+            "target_date": first.get("target_date"), "new_risk": new_risk, "fix_first": fix_first,
+            "store_grade": grade[0] if grade else None}
+
+
 # --- Data journey: the end-to-end flow with live counts at every stage ---
 _journey_cache: dict = {"ts": 0.0, "uc": None}
 
@@ -1353,7 +1431,16 @@ def api_journey():
         loop = execute_sql(f"""
             SELECT (SELECT COUNT(*) FROM {CATALOG}.ops.lb_colleague_actions_history WHERE _pg_change_type = 'insert') AS actions_in_uc,
                    (SELECT COUNT(*) FROM {CATALOG}.ops.lb_scan_log_history WHERE _pg_change_type = 'insert') AS scans_in_uc""")
-        _journey_cache.update(ts=time.time(), uc={"checks": checks, "loop": loop[0] if loop else {}})
+        try:
+            ml = execute_sql(f"""
+                SELECT (SELECT COUNT(*) FROM {SCORES} WHERE business_date = (SELECT MAX(business_date) FROM {SCORES})) AS scored,
+                       (SELECT MAX(model_version) FROM {SCORES} WHERE business_date = (SELECT MAX(business_date) FROM {SCORES})) AS model_version,
+                       (SELECT CAST(MAX(target_date) AS STRING) FROM {SCORES}) AS target_date,
+                       (SELECT max_by(list_precision, graded_date) FROM {GRADES} WHERE scope = 'estate') AS last_list_precision,
+                       (SELECT CAST(MAX(graded_date) AS STRING) FROM {GRADES}) AS last_graded""")[0]
+        except HTTPException:
+            ml = {}
+        _journey_cache.update(ts=time.time(), uc={"checks": checks, "loop": loop[0] if loop else {}, "ml": ml})
     live = {}
     try:
         rows, ms = lakebase.query(

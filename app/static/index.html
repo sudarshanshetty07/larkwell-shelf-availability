@@ -9,7 +9,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=9">
+  <link rel="stylesheet" href="/static/style.css?v=10">
 </head>
 <body>
   <!-- Header -->
@@ -29,7 +29,7 @@
     </div>
     <div class="header-right">
       <select class="persona-dropdown" id="persona-dropdown" onchange="onPersonaChange()">
-        <option value="support_centre">Head Office</option>
+        <option value="support_centre">Support Centre</option>
         <option value="retail">Retail</option>
       </select>
       <div class="segmented-control" id="subview-toggle">
@@ -139,7 +139,7 @@
           <div class="chat-messages" id="chat-messages">
             <div class="chat-bubble assistant">
               <div class="chat-bubble-content">
-                Hello! I'm the Larkwell Shelf Availability assistant. Ask about gaps, lows, root causes, suppliers, depots or the actions stores have taken, for any store or region. The three suggested questions are curated analyses computed live from today's data; anything else is answered by Genie.
+                Hello! I'm the Larkwell Shelf Availability assistant. Ask about gaps, lows, root causes, suppliers, depots or the actions stores have taken, for any store or region. The suggested questions are curated analyses computed live from today's data and the latest gap-risk predictions; anything else is answered by Genie.
               </div>
             </div>
             <div class="suggested-questions" id="suggested-questions"></div>
@@ -196,6 +196,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=8"></script>
+  <script src="/static/app.js?v=11"></script>
 </body>
 </html>

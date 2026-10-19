@@ -1,7 +1,8 @@
 {
   "profile": "set DATABRICKS_CONFIG_PROFILE to your Databricks CLI profile",
   "catalog": "larkwell_osa",
-  "business_date": "2026-10-17",
+  "business_date": "2026-10-19",
+  "anchor_date": "2026-10-19",
   "seed": 20261017,
   "warehouse_id": "148ccb90800933a1",
   "llm_endpoint": "databricks-claude-sonnet-4-5",

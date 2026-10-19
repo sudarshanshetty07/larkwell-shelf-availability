@@ -914,6 +914,11 @@ td.heatmap-low { background: rgba(0,86,64,.06); }
 .briefing-greeting p { margin: 0 0 8px; }
 .briefing-greeting p:last-child { margin-bottom: 0; }
 .briefing-section-title { font-size: 13px; font-weight: 700; color: var(--text); margin: 16px 0 8px; }
+.briefing-note { font-size: 12.5px; color: var(--text-sub); margin: 0 0 10px; line-height: 1.5; }
+.briefing-sub { font-size: 12px; font-weight: 700; color: var(--text); margin: 12px 0 6px; }
+.ml-badge { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 10px; background: #eef1ff; color: #3445c0; font-size: 11px; font-weight: 600; vertical-align: 1px; }
+.risk-pill { display: inline-block; min-width: 40px; padding: 1px 6px; border-radius: 10px; background: var(--red-light); color: var(--red); font-weight: 700; text-align: center; }
+.risk-why { font-size: 12px; color: var(--text-sub); }
 .briefing-cat-filter-row { margin-bottom: 8px; }
 .table-total-row { background: rgba(0,86,64,.04) !important; border-top: 2px solid var(--border); }
 

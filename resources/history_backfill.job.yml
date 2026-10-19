@@ -1,0 +1,76 @@
+resources:
+  jobs:
+    history_backfill:
+      name: Larkwell shelf availability - history backfill
+      description: >
+        One-off, after the anchor day is in: land five weeks of varied trading days before it, rebuild the pipeline from
+        every file, check the anchor day end to end, train the gap-risk model, then replay its evening predictions over
+        the test week so that each of those mornings is graded.
+      max_concurrent_runs: 1
+      parameters:
+        - name: history_dates
+          default: '["2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18", "2026-09-19", "2026-09-20", "2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27", "2026-09-28", "2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09", "2026-10-10", "2026-10-11", "2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18"]'
+        - name: replay_dates
+          default: '["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18"]'
+      tags:
+        project: larkwell-shelf-availability
+        data: synthetic
+      tasks:
+        - task_key: land_history
+          for_each_task:
+            inputs: "{{job.parameters.history_dates}}"
+            concurrency: 6
+            task:
+              task_key: land_history_day
+              notebook_task:
+                notebook_path: ../data/01_land_raw_feeds.py
+                base_parameters:
+                  catalog: ${var.catalog}
+                  business_date: "{{input}}"
+                  seed: ${var.seed}
+                  anchor_date: ${var.anchor_date}
+              timeout_seconds: 3600
+        - task_key: rebuild_pipeline
+          depends_on:
+            - task_key: land_history
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.availability_pipeline.id}
+            full_refresh: true
+        - task_key: refresh_lakebase
+          depends_on:
+            - task_key: rebuild_pipeline
+          pipeline_task:
+            pipeline_id: ${var.lakebase_sync_pipeline_id}
+        - task_key: validate_and_publish
+          depends_on:
+            - task_key: refresh_lakebase
+          notebook_task:
+            notebook_path: ../data/02_validate_and_publish.py
+            base_parameters:
+              catalog: ${var.catalog}
+              business_date: ${var.anchor_date}
+              pipeline_id: ${resources.pipelines.availability_pipeline.id}
+              lakebase_catalog: ${var.catalog}_pg
+          timeout_seconds: 1800
+        - task_key: train_gap_risk
+          depends_on:
+            - task_key: validate_and_publish
+          notebook_task:
+            notebook_path: ../ml/01_train_gap_risk.py
+            base_parameters:
+              catalog: ${var.catalog}
+          timeout_seconds: 5400
+        - task_key: replay_predictions
+          depends_on:
+            - task_key: train_gap_risk
+          for_each_task:
+            inputs: "{{job.parameters.replay_dates}}"
+            concurrency: 1
+            task:
+              task_key: replay_day
+              notebook_task:
+                notebook_path: ../ml/02_score_gap_risk.py
+                base_parameters:
+                  catalog: ${var.catalog}
+                  business_date: "{{input}}"
+              timeout_seconds: 2700

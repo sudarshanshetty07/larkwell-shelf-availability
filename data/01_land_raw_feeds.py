@@ -26,20 +26,36 @@
 # MAGIC - master-data corrections.
 # MAGIC
 # MAGIC The notebook also writes an **answer key** to the `raw.answer_key` volume, which the pipeline never reads.
-# MAGIC It's used to test the pipeline's output row by row. The headline counts are pinned, so the business case always shows the same numbers.
+# MAGIC It's used to test the pipeline's output row by row.
+# MAGIC
+# MAGIC **One pinned day, and varied days around it.** The anchor day (19 Oct 2026) is pinned: its headline counts are exact,
+# MAGIC so the business case always shows the same numbers. Any other date is the anchor rolled backwards or forwards one day at
+# MAGIC a time, so trading days differ the way real ones do:
+# MAGIC - a shelf's trouble carries over from one day to the next, so today says something about tomorrow;
+# MAGIC - suppliers, depots and stores have good and bad spells, and market shortages come and go;
+# MAGIC - a line that nearly failed today often shows a warning sign: a short delivery, a blocked order, a stock count, waste,
+# MAGIC   a cut allocation or a thin shelf;
+# MAGIC - volumes follow the week: more blocked orders on a Monday, more demand at the weekend.
+# MAGIC
+# MAGIC The gap-risk model (`ml/`) learns from that history. Nothing in the files says which line fails tomorrow.
 
 # COMMAND ----------
 
 dbutils.widgets.text("catalog", "larkwell_osa")
-dbutils.widgets.text("business_date", "2026-10-17")
+dbutils.widgets.text("business_date", "2026-10-19")
 dbutils.widgets.text("seed", "20261017")
+dbutils.widgets.text("anchor_date", "2026-10-19")
+
+import datetime
 
 CATALOG = dbutils.widgets.get("catalog")
 BUSINESS_DATE = dbutils.widgets.get("business_date")
 SEED = int(dbutils.widgets.get("seed"))
+ANCHOR = dbutils.widgets.get("anchor_date")
+DAY = (datetime.date.fromisoformat(BUSINESS_DATE) - datetime.date.fromisoformat(ANCHOR)).days   # 0 on the anchor
 LANDING = f"/Volumes/{CATALOG}/raw/landing"
 ANSWER_KEY = f"/Volumes/{CATALOG}/raw/answer_key/{BUSINESS_DATE}"
-print("Landing zone:", LANDING, "| business date:", BUSINESS_DATE, "| seed:", SEED)
+print("Landing zone:", LANDING, "| business date:", BUSINESS_DATE, "| seed:", SEED, "| days from the anchor:", DAY)
 
 # COMMAND ----------
 
@@ -362,16 +378,19 @@ WEIGHTS = {  # reason -> (store weights, upc weights)
 }
 
 occupied = np.zeros(N_STORES * N_UPCS, dtype=bool)
-parts = []
+parts, anchor_u, anchor_order = [], {}, {}
 for reason, gaps, lows, space in TARGETS:
     sw, uw = WEIGHTS[reason]
     logw = (np.log(sw)[:, None] + np.log(uw)[None, :]).ravel()
-    keys = logw - np.log(-np.log(rng.random(logw.size)))                 # Gumbel-top-k = weighted sampling w/o replacement
+    u = rng.random(logw.size)
+    keys = logw - np.log(-np.log(u))                                     # Gumbel-top-k = weighted sampling w/o replacement
     keys[occupied] = -np.inf
     n = gaps + lows
     pick_ = np.sort(np.argpartition(-keys, n)[:n])     # argpartition's order varies by CPU; sorting makes every run identical
     occupied[pick_] = True
     pick_ = rng.permutation(pick_)
+    if DAY:                                            # the anchor's own draws are where every other day starts from
+        anchor_u[reason], anchor_order[reason] = u, pick_
     issue = np.array(["GAP"] * gaps + ["LOW"] * lows)
     low = np.array([None] * gaps + ["SPACE_LOW"] * space + ["SALES_LOW"] * (lows - space), dtype=object)
     parts.append(pd.DataFrame({"cell": pick_, "issue": issue, "low_issue": low, "consensus_reason": reason}))
@@ -379,36 +398,167 @@ exc = pd.concat(parts, ignore_index=True)
 exc["store_idx"] = exc.cell // N_UPCS
 exc["upc_idx"] = exc.cell % N_UPCS
 
-m = len(exc)
-cr = exc.consensus_reason.to_numpy()
-exc["supplier_short_type"] = ""
-ss_idx = exc.index[cr == "SUPPLIER_SHORT"].to_numpy()
-ss_idx = rng.permutation(ss_idx)
-start = 0
-for t, c in SS_TYPES:
-    exc.loc[ss_idx[start:start + c], "supplier_short_type"] = t
-    start += c
-
 
 def whole(x, lo, hi):
     """Quantities are whole units at store-line scale (a line sells about 1.2 units a day)."""
     return np.clip(np.rint(x), lo, hi).astype(np.int32)
 
 
-# Same random draws as the Larkwell demo, rescaled from depot-level to store-line quantities.
-ss_q = whole(np.exp(rng.normal(np.log(68), 0.55, m)) / 6, 1, 36)
-sc_q = whole(rng.uniform(5, 50, m) / 4, 1, 12)
-wa_q = whole(rng.uniform(2, 30, m) / 4, 1, 8)
-uf_q = whole(np.exp(rng.normal(np.log(8), 0.7, m)) / 2, 1, 30)
-us_q = whole(rng.uniform(1, 20, m) / 3, 1, 7)
-sf_q = whole(rng.uniform(1, 10, m), 1, 10)
-exc["supplier_short_qty"] = np.where(cr == "SUPPLIER_SHORT", ss_q, 0)
-exc["scarcity_qty"] = np.where(cr == "SCARCITY", sc_q, 0)
-exc["waste_qty"] = np.where(cr == "WASTE", wa_q, 0)
-exc["under_forecast_qty"] = np.where(cr == "UNDER_FORECAST", uf_q, 0)
-exc["under_space_qty"] = np.where(exc.low_issue.to_numpy() == "SPACE_LOW", us_q, 0)
-exc["stockfile_adjustment_qty"] = np.where(cr == "STOCKFILE_ADJUSTMENT", sf_q, 0)
+def add_detail(exc, gen, ss_types):
+    """Short types and the quantity evidence for each exception (drawn in a fixed order, so a day always comes out the same)."""
+    m = len(exc)
+    cr = exc.consensus_reason.to_numpy()
+    exc["supplier_short_type"] = ""
+    ss_idx = exc.index[cr == "SUPPLIER_SHORT"].to_numpy()
+    ss_idx = gen.permutation(ss_idx)
+    start = 0
+    for t, c in ss_types:
+        exc.loc[ss_idx[start:start + c], "supplier_short_type"] = t
+        start += c
+    # Same random draws as the Larkwell demo, rescaled from depot-level to store-line quantities.
+    ss_q = whole(np.exp(gen.normal(np.log(68), 0.55, m)) / 6, 1, 36)
+    sc_q = whole(gen.uniform(5, 50, m) / 4, 1, 12)
+    wa_q = whole(gen.uniform(2, 30, m) / 4, 1, 8)
+    uf_q = whole(np.exp(gen.normal(np.log(8), 0.7, m)) / 2, 1, 30)
+    us_q = whole(gen.uniform(1, 20, m) / 3, 1, 7)
+    sf_q = whole(gen.uniform(1, 10, m), 1, 10)
+    exc["supplier_short_qty"] = np.where(cr == "SUPPLIER_SHORT", ss_q, 0)
+    exc["scarcity_qty"] = np.where(cr == "SCARCITY", sc_q, 0)
+    exc["waste_qty"] = np.where(cr == "WASTE", wa_q, 0)
+    exc["under_forecast_qty"] = np.where(cr == "UNDER_FORECAST", uf_q, 0)
+    exc["under_space_qty"] = np.where(exc.low_issue.to_numpy() == "SPACE_LOW", us_q, 0)
+    exc["stockfile_adjustment_qty"] = np.where(cr == "STOCKFILE_ADJUSTMENT", sf_q, 0)
+    return exc
+
+
+exc = add_detail(exc, rng, SS_TYPES)
+anchor_exc = exc
 print(exc.groupby(["consensus_reason", "issue"]).size().unstack())
+
+# COMMAND ----------
+
+# MAGIC %md ## Any other day: roll the day-to-day process from the anchor
+# MAGIC
+# MAGIC Everything in this cell is a parameter of the simulation. The pipeline and the model are never told any of it.
+# MAGIC - **Trouble carries over.** Every product-location has a hidden score for each root cause, which drifts a little each
+# MAGIC   day (a first-order autoregressive process, started from the anchor's own random draws). Each cause's exceptions are
+# MAGIC   still the lines with the highest weight plus score, exactly as on the anchor. So a line in trouble today is likely to
+# MAGIC   be in trouble tomorrow, and whether it's empty or only low carries over too.
+# MAGIC - **Good and bad spells.** Supplier, depot and store reliability, and shortages on the scarce lines, drift from day to
+# MAGIC   day. They're exactly as on the anchor when the date is the anchor.
+# MAGIC - **Warning signs.** Lines that came close to failing get more than their share of the day's short deliveries, blocked
+# MAGIC   orders, stock counts, waste and cut allocations, and their shelves run thinner. Most warning signs never become a gap,
+# MAGIC   and many gaps come with no warning at all.
+# MAGIC - **The week.** Exception volumes and demand follow the day of the week. Each cause keeps the anchor's mix of gaps,
+# MAGIC   lows and space lows.
+
+# COMMAND ----------
+
+from scipy.special import ndtr, ndtri       # the standard normal CDF and its inverse
+
+PERSIST = {"KNOWN_GAP": 0.98, "SUPPLIER_SHORT": 0.94, "UNDER_FORECAST": 0.88, "ORDER_DELIVERY_BLOCK": 0.92,
+           "SCARCITY": 0.96, "STOCKFILE_ADJUSTMENT": 0.9, "WASTE": 0.8, "INVESTIGATE": 0.7}   # day-to-day, per cause
+PERSIST_SEVERITY = 0.85                     # whether an exception is a gap or only a low
+SPELLS = {"supplier": (0.8, 1.0), "depot": (0.8, 0.5), "store": (0.75, 0.3), "scarce_line": (0.9, 0.8)}  # persistence, spread
+WEEK = [1.06, 1.02, 0.97, 0.96, 0.98, 1.00, 1.03]                    # exception volume, Monday to Sunday
+WEEK_BY_CAUSE = {"UNDER_FORECAST": [1.00, 0.97, 0.97, 1.00, 1.06, 1.14, 1.10],
+                 "ORDER_DELIVERY_BLOCK": [1.18, 1.06, 0.95, 0.94, 0.97, 0.98, 1.00],
+                 "WASTE": [1.12, 1.00, 0.97, 0.97, 0.98, 1.00, 1.02]}
+DEMAND_WEEK = [0.92, 0.94, 0.96, 1.00, 1.08, 1.16, 1.02]             # forecast demand, Monday to Sunday
+WARNING_SHARE = 0.85       # share of each kind of everyday signal that goes to lines close to failing (the rest is random)
+WARNING_SHARPNESS = 1.5    # how strongly those signals favour the closest lines
+THIN_SHELF = 0.8           # how strongly closeness to failing thins the shelf
+THIN_SHELF_CAUSES = ("SUPPLIER_SHORT", "UNDER_FORECAST", "ORDER_DELIVERY_BLOCK", "SCARCITY", "STOCKFILE_ADJUSTMENT", "WASTE",
+                     "INVESTIGATE")                     # every cause except a planned range exit
+ANCHOR_DOW = datetime.date.fromisoformat(ANCHOR).weekday()
+N = N_STORES * N_UPCS
+
+
+def day_draws(date, stream):
+    """Random draws for one simulated date. The same date and stream always give the same draws."""
+    return np.random.default_rng([SEED, datetime.date.fromisoformat(date).toordinal(), stream])
+
+
+def roll(start, persistence, spread, stream):
+    """Roll an AR(1) process from its anchor value to the business date, one day at a time (backwards before the anchor)."""
+    x, step = np.asarray(start, dtype=np.float64), int(np.sign(DAY))
+    for k in range(1, abs(DAY) + 1):
+        date = (datetime.date.fromisoformat(ANCHOR) + datetime.timedelta(days=k * step)).isoformat()
+        x = persistence * x + spread * np.sqrt(1 - persistence ** 2) * day_draws(date, stream).standard_normal(x.shape)
+    return x
+
+
+def unit(u):
+    return np.clip(u, 1e-12, 1 - 1e-12)
+
+
+def place_day():
+    """The business date's exceptions: the anchor's placement rule with that day's weights, hidden scores and volumes.
+    Also returns, per cause, how close every line came to failing (warning-sign weights), and an overall closeness score."""
+    dow = datetime.date.fromisoformat(BUSINESS_DATE).weekday()
+    g = day_draws(BUSINESS_DATE, 0)
+    spell = {k: np.exp(roll(np.zeros(n), *SPELLS[k], i + 1))
+             for i, (k, n) in enumerate([("supplier", len(dim_supplier)), ("depot", len(DEPOTS)), ("store", N_STORES),
+                                          ("scarce_line", N_UPCS)])}
+    sup_pos = Pd.supplier.map({s: i for i, s in enumerate(dim_supplier.supplier)}).to_numpy()
+    dep_pos = S.depot.map({d: i for i, (d, _) in enumerate(DEPOTS)}).to_numpy()
+    scarce = np.isin(np.arange(N_UPCS), scarce_upcs)
+    depot_m, store_m = spell["depot"][dep_pos], spell["store"]
+    weights = {
+        "KNOWN_GAP": (store_w, u_kg), "SUPPLIER_SHORT": (s_ss * depot_m, sup_w * spell["supplier"][sup_pos]),
+        "UNDER_FORECAST": (store_w, u_uf), "ORDER_DELIVERY_BLOCK": (s_odb * depot_m, np.ones(N_UPCS)),
+        "SCARCITY": (store_w, u_sc * np.where(scarce, spell["scarce_line"], 1.0)),
+        "STOCKFILE_ADJUSTMENT": (s_sfa * store_m, np.ones(N_UPCS)), "WASTE": (store_w * store_m, u_wa),
+        "INVESTIGATE": (store_w, np.ones(N_UPCS))}
+    # Gap-or-low severity: on the anchor, the gaps came first in each cause's (random) order.
+    sev = day_draws(ANCHOR, 20).standard_normal(N)
+    for reason, gaps, lows, space in TARGETS:
+        order = anchor_order[reason]
+        sev[order] = ndtri(1 - (np.arange(order.size) + 0.5) / order.size)
+    sev = roll(sev, PERSIST_SEVERITY, 1.0, 21)
+    space_u = np.random.default_rng([SEED, 22]).random(N)   # a shelf that's too small stays too small
+    occupied = np.zeros(N, dtype=bool)
+    parts, margin, ss_total = [], {}, 0
+    for i, (reason, gaps, lows, space) in enumerate(TARGETS):
+        f = 1.0 if reason == "KNOWN_GAP" else WEEK[dow] / WEEK[ANCHOR_DOW]        # planned range exits ignore the week
+        if reason in WEEK_BY_CAUSE:
+            f *= WEEK_BY_CAUSE[reason][dow] / WEEK_BY_CAUSE[reason][ANCHOR_DOW]
+        n = int(round((gaps + lows) * f * np.exp(g.normal(0, 0.03))))
+        n_gap = int(round(n * gaps / (gaps + lows)))
+        n_space = int(round((n - n_gap) * space / lows))
+        sw, uw = weights[reason]
+        logw = (np.log(sw)[:, None] + np.log(uw)[None, :]).ravel()
+        z = roll(ndtri(unit(anchor_u[reason])), PERSIST[reason], 1.0, 10 + i)
+        keys = logw - np.log(-np.log(unit(ndtr(z))))
+        keys[occupied] = -np.inf
+        pick_ = np.sort(np.argpartition(-keys, n)[:n])
+        margin[reason] = (keys - keys[pick_].min()).astype(np.float32)          # below zero: how far from failing
+        occupied[pick_] = True
+        order = pick_[np.argsort(-sev[pick_], kind="stable")]                     # most severe first: those are the gaps
+        is_space = np.zeros(n - n_gap, bool)
+        is_space[np.argsort(-space_u[order[n_gap:]], kind="stable")[:n_space]] = True
+        issue = np.array(["GAP"] * n_gap + ["LOW"] * (n - n_gap))
+        low = np.array([None] * n_gap + list(np.where(is_space, "SPACE_LOW", "SALES_LOW")), dtype=object)
+        parts.append(pd.DataFrame({"cell": order, "issue": issue, "low_issue": low, "consensus_reason": reason}))
+        ss_total += n if reason == "SUPPLIER_SHORT" else 0
+    day_exc = pd.concat(parts, ignore_index=True)
+    day_exc["store_idx"] = day_exc.cell // N_UPCS
+    day_exc["upc_idx"] = day_exc.cell % N_UPCS
+    cuts = np.rint(np.cumsum([c for _, c in SS_TYPES]) / sum(c for _, c in SS_TYPES) * ss_total).astype(int)
+    ss_types = list(zip([t for t, _ in SS_TYPES], np.diff(np.concatenate([[0], cuts]))))
+    day_exc = add_detail(day_exc, day_draws(BUSINESS_DATE, 5), ss_types)
+    warn = {r: np.exp(WARNING_SHARPNESS * np.maximum(margin[r], -30)) for r in
+            ("SUPPLIER_SHORT", "ORDER_DELIVERY_BLOCK", "STOCKFILE_ADJUSTMENT", "WASTE", "SCARCITY")}
+    near = np.max(np.stack([margin[r] for r in THIN_SHELF_CAUSES]), axis=0)
+    rank_ = np.empty(N)
+    rank_[np.argsort(near, kind="stable")] = np.arange(N)
+    return day_exc, warn, ndtri((rank_ + 0.5) / N)
+
+
+if DAY:
+    exc, WARN, CLOSENESS = place_day()
+    print(f"{BUSINESS_DATE} is {DAY:+d} days from the anchor:")
+    print(exc.groupby(["consensus_reason", "issue"]).size().unstack())
 
 # COMMAND ----------
 
@@ -417,267 +567,296 @@ print(exc.groupby(["consensus_reason", "issue"]).size().unstack())
 # MAGIC Every product-location gets a stock-and-sales record. Each exception also gets the evidence for its true root cause.
 # MAGIC Secondary evidence is added only where the root-cause rules would still reach the right answer:
 # MAGIC a reason earlier in the cascade outranks it, or the shelf is healthy anyway.
+# MAGIC
+# MAGIC On a day other than the anchor, the anchor is synthesised first, only so that the master data (prices, shelf lives,
+# MAGIC service levels) is drawn exactly as on the anchor: master data doesn't change from day to day.
 
 # COMMAND ----------
-
-r2 = np.random.default_rng(SEED + 1)      # second stream: feed detail (the placement above is unchanged)
-N = N_STORES * N_UPCS
-cell = exc.cell.to_numpy()
-rank = np.zeros(N, np.int8)
-rank[cell] = exc.consensus_reason.map(RANK).to_numpy()
-iss = np.zeros(N, np.int8)
-iss[cell] = np.where(exc.issue.to_numpy() == "GAP", 1, 2)
-low_np = exc.low_issue.to_numpy()
-lowt = np.zeros(N, np.int8)
-lowt[cell] = np.where(low_np == "SPACE_LOW", 2, np.where(low_np == "SALES_LOW", 1, 0))
-
-
-def per_cell(col):
-    a = np.zeros(N, np.int32)
-    a[cell] = exc[col].to_numpy()
-    return a
-
-
-q_ss, q_sc, q_wa, q_uf, q_us, q_sf = (per_cell(c) for c in ["supplier_short_qty", "scarcity_qty", "waste_qty",
-                                                             "under_forecast_qty", "under_space_qty",
-                                                             "stockfile_adjustment_qty"])
 
 store_ids = S.store_id.to_numpy()
 upcs = Pd.upc.to_numpy()
 depot_id_of_store = S.depot.map(DEPOT_ID).to_numpy()
 sup_id_of_upc = Pd.supplier.map(SUP_ID).to_numpy()
-
-
-def ids(cells):
-    return store_ids[cells // N_UPCS], upcs[cells % N_UPCS]
-
-
-def pick(mask, n=None, p=None):
-    idx = np.flatnonzero(mask)
-    if p is not None:
-        return idx[r2.random(idx.size) < p]
-    return np.sort(r2.choice(idx, size=min(n, idx.size), replace=False))
-
-
-def stamps(n, lo_h=2, hi_h=34):
-    t = pd.Timestamp(BUSINESS_DATE) - pd.to_timedelta(r2.uniform(lo_h, hi_h, n), unit="h")
-    return t.floor("min").strftime("%Y-%m-%dT%H:%M:00Z")
-
-
-# --- Store stock and sales: every product-location -------------------------------------------------
 FMT_VEL = {"Superstore": 1.6, "Local": 0.9, "Travel": 1.1, "Forecourt": 0.6, "Outlet": 0.5}
 CAT_VEL = {"Fresh Produce": 1.5, "Dairy": 1.4, "Bakery": 1.3, "Sandwiches & Food To Go": 1.3, "Beverages": 1.1,
            "Ready Meals": 1.0, "Snacks & Confectionery": 1.0, "Fresh Meat": 0.9, "Grocery": 0.8,
            "Deli & Cooked Meats": 0.8, "Frozen": 0.7, "Desserts": 0.6, "Seafood": 0.6}
 # Daily demand: median 0.7 units per line, scaled by store format and category. Across 900 stores x 6,000 lines
 # that is a sales base of about GBP 9bn a year, the scale of a large UK food retailer.
-mu = (np.log(0.7) + np.log(S.site_trading_group.map(FMT_VEL).to_numpy())[:, None]
+MU = (np.log(0.7) + np.log(S.site_trading_group.map(FMT_VEL).to_numpy())[:, None]
       + np.log(Pd.category.map(CAT_VEL).to_numpy())[None, :]).ravel()
-forecast = np.maximum(1, np.rint(np.exp(mu + r2.normal(0, 0.6, N)))).astype(np.int32)
-pres_min = r2.integers(2, 7, N).astype(np.int32)
-capacity = np.ceil(np.maximum(pres_min, forecast) * r2.uniform(1.3, 3.0, N)).astype(np.int32)
-sales = np.rint(forecast * r2.uniform(0.55, 1.0, N)).astype(np.int32)
-beat = r2.random(N) < 0.12                                               # some lines sell more than forecast
-sales[beat] = forecast[beat] + r2.geometric(0.5, int(beat.sum())).astype(np.int32)
-on_hand = pres_min + np.floor(r2.random(N) * (capacity - pres_min + 1)).astype(np.int32)
-del mu
-
-uf = rank == RANK["UNDER_FORECAST"]
-forecast[uf] = np.maximum(forecast[uf], np.rint(q_uf[uf] * r2.uniform(0.5, 1.5, int(uf.sum()))).astype(np.int32))
-gap, low = iss == 1, iss == 2
-on_hand[gap] = 0
-on_hand[low] = 1 + np.floor(r2.random(int(low.sum())) * (pres_min[low] - 1)).astype(np.int32)
-sp, sl = lowt == 2, lowt == 1
-forecast[sp] = np.maximum(forecast[sp], pres_min[sp] + q_us[sp])        # shelf can't hold a day's demand
-capacity[sp] = forecast[sp] - q_us[sp]
-capacity[sl] = np.maximum(capacity[sl], forecast[sl])
-sales[uf] = forecast[uf] + q_uf[uf]                                      # under-forecast lines sell 1.7-3x forecast
-inv = rank == RANK["INVESTIGATE"]
-sales[inv] = np.minimum(sales[inv], forecast[inv])
-
 exit_line = np.zeros(N_UPCS, bool)
 exit_line[exit_upcs] = True
-sell_down = (rank == 0) & np.tile(exit_line, N_STORES) & (r2.random(N) < 0.35)   # exiting lines still on shelf
-exiting = (rank == RANK["KNOWN_GAP"]) | sell_down
-
-# --- Deliveries: supplier shorts (evidence), plus normal and noisy lines ---------------------------
-SHORT_REASONS = np.array([t for t, _ in SS_TYPES])
-ss_type_of = pd.Series(exc.supplier_short_type.to_numpy(), index=cell)
-deliv = []
-
-
-def delivery_lines(cells, ordered, delivered, reason, kind):
-    sid, upc = ids(cells)
-    deliv.append(pd.DataFrame({
-        "business_date": BUSINESS_DATE, "store_id": sid, "upc": upc,
-        "depot_id": depot_id_of_store[cells // N_UPCS], "supplier_id": sup_id_of_upc[cells % N_UPCS],
-        "ordered_units": ordered, "delivered_units": delivered, "short_reason": reason,
-        "delivered_at": stamps(len(cells), 6, 30), "_kind": kind}))
-
-
-c = np.flatnonzero(rank == RANK["SUPPLIER_SHORT"])
-d = r2.integers(0, 12, c.size)
-delivery_lines(c, d + q_ss[c], d, ss_type_of.loc[c].to_numpy(), "truth_short")
-c = np.concatenate([pick(rank == RANK["KNOWN_GAP"], p=0.15), pick(rank == RANK["SCARCITY"], p=0.35)])
-d = r2.integers(0, 12, c.size)
-delivery_lines(c, d + r2.integers(1, 24, c.size), d,
-               np.where(rank[c] == RANK["SCARCITY"], "RAW_MATERIAL_SHORTAGE", r2.choice(SHORT_REASONS, c.size)),
-               "secondary_short")
-c = pick(rank == 0, n=25_000)
-d = r2.integers(3, 24, c.size)
-delivery_lines(c, d + r2.integers(1, 12, c.size), d, r2.choice(SHORT_REASONS, c.size), "short_on_healthy_shelf")
-c = pick(np.ones(N, bool), n=300_000)
-d = r2.integers(3, 25, c.size)
-delivery_lines(c, d, d, None, "complete")
-c = pick(np.ones(N, bool), n=400)
-d = r2.integers(3, 25, c.size)
-delivery_lines(c, d, d + r2.integers(1, 6, c.size), None, "over_delivered")
-deliveries = pd.concat(deliv, ignore_index=True)
-deliveries.insert(0, "delivery_line_id", [f"DL{BUSINESS_DATE.replace('-', '')}{i:07d}" for i in range(len(deliveries))])
-# Malformed records the pipeline must reject. Negative deliveries sit on lines whose true cause is later in the
-# cascade, so letting them through would wrongly turn them into supplier shorts.
-bad = []
-c = pick(rank >= RANK["ORDER_DELIVERY_BLOCK"], n=40)
-sid, upc = ids(c)
-bad.append(pd.DataFrame({"store_id": sid, "upc": upc, "ordered_units": 20, "delivered_units": -5, "_kind": "bad_negative"}))
-c = pick(np.ones(N, bool), n=40)
-sid, upc = ids(c)
-bad.append(pd.DataFrame({"store_id": None, "upc": upc, "ordered_units": 12, "delivered_units": 0, "_kind": "bad_no_store"}))
-c = pick(np.ones(N, bool), n=40)
-sid, upc = ids(c)
-bad.append(pd.DataFrame({"store_id": sid, "upc": [u[:7] + "XX" + u[9:] for u in upc], "ordered_units": 12,
-                         "delivered_units": 0, "_kind": "bad_upc"}))
-bad = pd.concat(bad, ignore_index=True)
-bad["business_date"] = BUSINESS_DATE
-bad["depot_id"], bad["supplier_id"], bad["short_reason"] = "D01", "SUP001", "DEPOT_SHORT"
-bad["delivered_at"] = stamps(len(bad), 6, 30)
-bad.insert(0, "delivery_line_id", [f"DLX{BUSINESS_DATE.replace('-', '')}{i:05d}" for i in range(len(bad))])
-resent = deliveries.sample(frac=0.01, random_state=SEED)                # depot system re-sent ~1% of lines
-deliveries = pd.concat([deliveries, bad, resent], ignore_index=True).sample(frac=1.0, random_state=SEED + 2)
-print("deliveries:", deliveries._kind.value_counts().to_dict(), "| re-sent duplicates:", len(resent))
-
-# --- Order events: delivery blocks (evidence), plus blocks that were later released -----------------
-BLOCK_REASONS = np.array(["Depot capacity cap", "Vehicle cancelled", "Order system hold", "Missed delivery slot",
-                          "Order quantity cap"])
-ev = []
-
-
-def order_events(cells, statuses, kind):
-    sid, upc = ids(cells)
-    n = len(cells)
-    oid = np.array([f"PO{BUSINESS_DATE.replace('-', '')}{kind[:2].upper()}{i:06d}" for i in range(n)])
-    t1 = pd.Timestamp(BUSINESS_DATE) - pd.to_timedelta(r2.uniform(20, 40, n), unit="h")
-    for step, status in enumerate(statuses):
-        keep = np.ones(n, bool) if step == 0 else status[1]
-        st = status if step == 0 else status[0]
-        ts = (t1 + pd.to_timedelta(6 * step, unit="h"))[keep]
-        ev.append(pd.DataFrame({
-            "order_id": oid[keep], "store_id": sid[keep], "upc": upc[keep], "status": st,
-            "block_reason": r2.choice(BLOCK_REASONS, int(keep.sum())) if st == "BLOCKED" else None,
-            "event_ts": ts.floor("min").strftime("%Y-%m-%dT%H:%M:00Z"), "_kind": kind}))
-
-
-c = np.flatnonzero(rank == RANK["ORDER_DELIVERY_BLOCK"])
-order_events(c, ["BLOCKED", ("CANCELLED", r2.random(c.size) < 0.2)], "truth_block")
-c = pick((rank >= 1) & (rank < RANK["ORDER_DELIVERY_BLOCK"]), p=0.10)
-order_events(c, ["BLOCKED"], "secondary_block")
-c = pick(rank == 0, n=20_000)
-order_events(c, ["BLOCKED"], "open_block_healthy_shelf")
-c = np.concatenate([pick(rank > RANK["ORDER_DELIVERY_BLOCK"], p=0.08), pick(rank == 0, n=20_000)])
-order_events(c, ["BLOCKED", ("RELEASED", np.ones(c.size, bool))], "released_block")
-order_events_df = pd.concat(ev, ignore_index=True)
-order_events_df.insert(0, "event_id", [f"OE{i:07d}" for i in range(len(order_events_df))])
-order_events_df["business_date"] = BUSINESS_DATE
-print("order events:", order_events_df._kind.value_counts().to_dict())
-
-# --- Stock counts: phantom stock (evidence), plus found stock and transfers --------------------------
-cnt = []
-
-
-def counts(cells, units, reason, kind):
-    sid, upc = ids(cells)
-    cnt.append(pd.DataFrame({"business_date": BUSINESS_DATE, "store_id": sid, "upc": upc,
-                             "adjustment_reason": reason, "adjustment_units": units,
-                             "counted_at": stamps(len(cells), 2, 20), "_kind": kind}))
-
-
-c = np.flatnonzero(rank == RANK["STOCKFILE_ADJUSTMENT"])
-counts(c, -q_sf[c], "STOCK_COUNT", "truth_phantom")
-c = pick((rank >= 1) & (rank < RANK["STOCKFILE_ADJUSTMENT"]), p=0.08)
-counts(c, -r2.integers(1, 8, c.size), "STOCK_COUNT", "secondary_phantom")
-c = pick(rank > RANK["STOCKFILE_ADJUSTMENT"], p=0.08)
-counts(c, r2.integers(1, 6, c.size), "STOCK_COUNT", "found_stock")
-c = pick(rank > RANK["STOCKFILE_ADJUSTMENT"], p=0.05)
-counts(c, -r2.integers(1, 6, c.size), "TRANSFER_OUT", "transfer_out")
-c = pick(rank == 0, n=40_000)
-counts(c, r2.choice([-1, 1], c.size) * r2.integers(1, 6, c.size), "STOCK_COUNT", "count_healthy_shelf")
-stock_counts = pd.concat(cnt, ignore_index=True)
-stock_counts.insert(0, "count_id", [f"SC{i:07d}" for i in range(len(stock_counts))])
-print("stock counts:", stock_counts._kind.value_counts().to_dict())
-
-# --- Waste: waste-driven gaps (evidence), plus everyday waste ---------------------------------------
-WASTE_REASONS = np.array(["OUT_OF_DATE", "DAMAGED", "QUALITY"])
-wst = []
-
-
-def waste(cells, units, kind):
-    sid, upc = ids(cells)
-    wst.append(pd.DataFrame({"business_date": BUSINESS_DATE, "store_id": sid, "upc": upc, "waste_units": units,
-                             "waste_reason": r2.choice(WASTE_REASONS, len(cells)),
-                             "recorded_at": stamps(len(cells), 2, 26), "_kind": kind}))
-
-
-c = np.flatnonzero(rank == RANK["WASTE"])
-split = (r2.random(c.size) < 0.35) & (q_wa[c] >= 2)                       # some waste is recorded in two goes
-first = np.where(split, 1 + np.floor(r2.random(c.size) * (q_wa[c] - 1)).astype(np.int32), q_wa[c])
-waste(c, first, "truth_waste")
-waste(c[split], (q_wa[c] - first)[split], "truth_waste_second_entry")
-c = pick((rank >= 1) & (rank < RANK["WASTE"]), p=0.10)
-waste(c, r2.integers(1, 5, c.size), "secondary_waste")
-c = np.flatnonzero((rank == 0) & (r2.random(N) < 0.028 * np.tile(u_wa, N_STORES)))
-waste(c, r2.integers(1, 4, c.size), "waste_healthy_shelf")
-waste_df = pd.concat(wst, ignore_index=True)
-waste_df.insert(0, "waste_id", [f"WE{i:07d}" for i in range(len(waste_df))])
-print("waste:", waste_df._kind.value_counts().to_dict())
-
-# --- Allocations: market shortages (evidence), plus full and promotional allocations -----------------
 scarce_line = np.zeros(N_UPCS, bool)
 scarce_line[scarce_upcs] = True
 on_scarce = np.tile(scarce_line, N_STORES)
-alc = []
+SELLING_DOWN = np.random.default_rng([SEED, 23]).random(N) < 0.35       # other days: a line selling down stays so
+SHORT_REASONS = np.array([t for t, _ in SS_TYPES])
+BLOCK_REASONS = np.array(["Depot capacity cap", "Vehicle cancelled", "Order system hold", "Missed delivery slot",
+                          "Order quantity cap"])
+WASTE_REASONS = np.array(["OUT_OF_DATE", "DAMAGED", "QUALITY"])
 
 
-def allocations(cells, requested, allocated, reason, kind):
-    sid, upc = ids(cells)
-    alc.append(pd.DataFrame({"business_date": BUSINESS_DATE, "store_id": sid, "upc": upc,
-                             "allocation_reason": reason, "requested_units": requested,
-                             "allocated_units": allocated, "_kind": kind}))
+def ids(cells):
+    return store_ids[cells // N_UPCS], upcs[cells % N_UPCS]
 
 
-c = np.flatnonzero(rank == RANK["SCARCITY"])
-a = r2.integers(0, 12, c.size)
-allocations(c, a + q_sc[c], a, "MARKET_SHORTAGE", "truth_shortage")
-c = pick((rank == RANK["KNOWN_GAP"]) & on_scarce, p=0.4)
-a = r2.integers(0, 12, c.size)
-allocations(c, a + r2.integers(1, 12, c.size), a, "MARKET_SHORTAGE", "secondary_shortage")
-c = pick((rank == 0) & on_scarce, p=0.6)
-a = r2.integers(3, 24, c.size)
-allocations(c, a + r2.integers(1, 6, c.size), a, "MARKET_SHORTAGE", "shortage_healthy_shelf")
-c = pick((rank > RANK["SCARCITY"]) & on_scarce, p=1.0)
-a = r2.integers(3, 24, c.size)
-allocations(c, a, a, "MARKET_SHORTAGE", "allocated_in_full")
-c = pick((rank > RANK["SCARCITY"]) & ~on_scarce, n=3_000)
-a = r2.integers(3, 24, c.size)
-allocations(c, a + r2.integers(1, 6, c.size), a, "PROMO_ALLOCATION", "promo_cap")
-allocations_df = pd.concat(alc, ignore_index=True)
-allocations_df.insert(0, "allocation_id", [f"AL{i:07d}" for i in range(len(allocations_df))])
-print("allocations:", allocations_df._kind.value_counts().to_dict())
+def synthesize(exc, r2, date, warn=None, closeness=None):
+    """One day's source-system records for the given true state of every shelf. `warn` (warning-sign weights by cause)
+    and `closeness` (how close each line came to failing) are given only for days other than the anchor."""
+    cell = exc.cell.to_numpy()
+    rank = np.zeros(N, np.int8)
+    rank[cell] = exc.consensus_reason.map(RANK).to_numpy()
+    iss = np.zeros(N, np.int8)
+    iss[cell] = np.where(exc.issue.to_numpy() == "GAP", 1, 2)
+    low_np = exc.low_issue.to_numpy()
+    lowt = np.zeros(N, np.int8)
+    lowt[cell] = np.where(low_np == "SPACE_LOW", 2, np.where(low_np == "SALES_LOW", 1, 0))
+
+    def per_cell(col):
+        a = np.zeros(N, np.int32)
+        a[cell] = exc[col].to_numpy()
+        return a
+
+    q_ss, q_sc, q_wa, q_uf, q_us, q_sf = (per_cell(c) for c in ["supplier_short_qty", "scarcity_qty", "waste_qty",
+                                                                 "under_forecast_qty", "under_space_qty",
+                                                                 "stockfile_adjustment_qty"])
+
+    def warning(reason):
+        return None if warn is None else warn[reason]
+
+    def pick(mask, n=None, p=None, w=None):
+        idx = np.flatnonzero(mask)
+        if w is not None:                       # warning signs: weighted towards the lines that came closest to failing
+            w = (1 - WARNING_SHARE) + WARNING_SHARE * w[idx] / w[idx].mean()
+            if p is not None:
+                return idx[r2.random(idx.size) < np.minimum(1.0, (p[idx] if np.ndim(p) else p) * w)]
+            k = min(n, idx.size)
+            keys = np.log(w) - np.log(-np.log(unit(r2.random(idx.size))))
+            return np.sort(idx[np.argpartition(-keys, k - 1)[:k]])
+        if p is not None:
+            return idx[r2.random(idx.size) < p]
+        return np.sort(r2.choice(idx, size=min(n, idx.size), replace=False))
+
+    def stamps(n, lo_h=2, hi_h=34):
+        t = pd.Timestamp(date) - pd.to_timedelta(r2.uniform(lo_h, hi_h, n), unit="h")
+        return t.floor("min").strftime("%Y-%m-%dT%H:%M:00Z")
+
+    # --- Store stock and sales: every product-location -------------------------------------------------
+    if warn is None:
+        forecast = np.maximum(1, np.rint(np.exp(MU + r2.normal(0, 0.6, N)))).astype(np.int32)
+        pres_min = r2.integers(2, 7, N).astype(np.int32)
+        capacity = np.ceil(np.maximum(pres_min, forecast) * r2.uniform(1.3, 3.0, N)).astype(np.int32)
+        sales = np.rint(forecast * r2.uniform(0.55, 1.0, N)).astype(np.int32)
+        beat = r2.random(N) < 0.12                                           # some lines sell more than forecast
+        sales[beat] = forecast[beat] + r2.geometric(0.5, int(beat.sum())).astype(np.int32)
+        on_hand = pres_min + np.floor(r2.random(N) * (capacity - pres_min + 1)).astype(np.int32)
+    else:
+        shelf = np.random.default_rng(SEED + 1)     # the anchor's first draws, so every day has the same shelves
+        noise = shelf.normal(0, 0.6, N)
+        pres_min = shelf.integers(2, 7, N).astype(np.int32)
+        base = np.maximum(1, np.rint(np.exp(MU + noise)))
+        capacity = np.ceil(np.maximum(pres_min, base) * shelf.uniform(1.3, 3.0, N)).astype(np.int32)
+        week = np.log(DEMAND_WEEK[datetime.date.fromisoformat(date).weekday()] / DEMAND_WEEK[ANCHOR_DOW])
+        forecast = np.maximum(1, np.rint(np.exp(MU + noise + week + r2.normal(0, 0.15, N)))).astype(np.int32)
+        sales = np.rint(forecast * r2.uniform(0.55, 1.0, N)).astype(np.int32)
+        beat = r2.random(N) < 0.12
+        sales[beat] = forecast[beat] + r2.geometric(0.5, int(beat.sum())).astype(np.int32)
+        fill = ndtr(-THIN_SHELF * closeness + np.sqrt(1 - THIN_SHELF ** 2) * r2.standard_normal(N))  # nearly failing: thin
+        on_hand = pres_min + np.floor(np.minimum(fill, 1 - 1e-9) * (capacity - pres_min + 1)).astype(np.int32)
+
+    uf = rank == RANK["UNDER_FORECAST"]
+    forecast[uf] = np.maximum(forecast[uf], np.rint(q_uf[uf] * r2.uniform(0.5, 1.5, int(uf.sum()))).astype(np.int32))
+    gap, low = iss == 1, iss == 2
+    on_hand[gap] = 0
+    on_hand[low] = 1 + np.floor(r2.random(int(low.sum())) * (pres_min[low] - 1)).astype(np.int32)
+    sp, sl = lowt == 2, lowt == 1
+    forecast[sp] = np.maximum(forecast[sp], pres_min[sp] + q_us[sp])        # shelf can't hold a day's demand
+    capacity[sp] = forecast[sp] - q_us[sp]
+    capacity[sl] = np.maximum(capacity[sl], forecast[sl])
+    sales[uf] = forecast[uf] + q_uf[uf]                                      # under-forecast lines sell 1.7-3x forecast
+    inv = rank == RANK["INVESTIGATE"]
+    sales[inv] = np.minimum(sales[inv], forecast[inv])
+
+    healthy_exit = (rank == 0) & np.tile(exit_line, N_STORES)
+    sell_down = healthy_exit & ((r2.random(N) < 0.35) if warn is None else SELLING_DOWN)   # exiting lines still on shelf
+    exiting = (rank == RANK["KNOWN_GAP"]) | sell_down
+
+    # --- Deliveries: supplier shorts (evidence), plus normal and noisy lines ---------------------------
+    ss_type_of = pd.Series(exc.supplier_short_type.to_numpy(), index=cell)
+    deliv = []
+
+    def delivery_lines(cells, ordered, delivered, reason, kind):
+        sid, upc = ids(cells)
+        deliv.append(pd.DataFrame({
+            "business_date": date, "store_id": sid, "upc": upc,
+            "depot_id": depot_id_of_store[cells // N_UPCS], "supplier_id": sup_id_of_upc[cells % N_UPCS],
+            "ordered_units": ordered, "delivered_units": delivered, "short_reason": reason,
+            "delivered_at": stamps(len(cells), 6, 30), "_kind": kind}))
+
+    c = np.flatnonzero(rank == RANK["SUPPLIER_SHORT"])
+    d = r2.integers(0, 12, c.size)
+    delivery_lines(c, d + q_ss[c], d, ss_type_of.loc[c].to_numpy(), "truth_short")
+    c = np.concatenate([pick(rank == RANK["KNOWN_GAP"], p=0.15), pick(rank == RANK["SCARCITY"], p=0.35)])
+    d = r2.integers(0, 12, c.size)
+    delivery_lines(c, d + r2.integers(1, 24, c.size), d,
+                   np.where(rank[c] == RANK["SCARCITY"], "RAW_MATERIAL_SHORTAGE", r2.choice(SHORT_REASONS, c.size)),
+                   "secondary_short")
+    c = pick(rank == 0, n=25_000, w=warning("SUPPLIER_SHORT"))
+    d = r2.integers(3, 24, c.size)
+    delivery_lines(c, d + r2.integers(1, 12, c.size), d, r2.choice(SHORT_REASONS, c.size), "short_on_healthy_shelf")
+    c = pick(np.ones(N, bool), n=300_000)
+    d = r2.integers(3, 25, c.size)
+    delivery_lines(c, d, d, None, "complete")
+    c = pick(np.ones(N, bool), n=400)
+    d = r2.integers(3, 25, c.size)
+    delivery_lines(c, d, d + r2.integers(1, 6, c.size), None, "over_delivered")
+    deliveries = pd.concat(deliv, ignore_index=True)
+    deliveries.insert(0, "delivery_line_id", [f"DL{date.replace('-', '')}{i:07d}" for i in range(len(deliveries))])
+    # Malformed records the pipeline must reject. Negative deliveries sit on lines whose true cause is later in the
+    # cascade, so letting them through would wrongly turn them into supplier shorts.
+    bad = []
+    c = pick(rank >= RANK["ORDER_DELIVERY_BLOCK"], n=40)
+    sid, upc = ids(c)
+    bad.append(pd.DataFrame({"store_id": sid, "upc": upc, "ordered_units": 20, "delivered_units": -5, "_kind": "bad_negative"}))
+    c = pick(np.ones(N, bool), n=40)
+    sid, upc = ids(c)
+    bad.append(pd.DataFrame({"store_id": None, "upc": upc, "ordered_units": 12, "delivered_units": 0, "_kind": "bad_no_store"}))
+    c = pick(np.ones(N, bool), n=40)
+    sid, upc = ids(c)
+    bad.append(pd.DataFrame({"store_id": sid, "upc": [u[:7] + "XX" + u[9:] for u in upc], "ordered_units": 12,
+                             "delivered_units": 0, "_kind": "bad_upc"}))
+    bad = pd.concat(bad, ignore_index=True)
+    bad["business_date"] = date
+    bad["depot_id"], bad["supplier_id"], bad["short_reason"] = "D01", "SUP001", "DEPOT_SHORT"
+    bad["delivered_at"] = stamps(len(bad), 6, 30)
+    bad.insert(0, "delivery_line_id", [f"DLX{date.replace('-', '')}{i:05d}" for i in range(len(bad))])
+    shuffle_seed = SEED if warn is None else int(day_draws(date, 7).integers(2 ** 31))
+    resent = deliveries.sample(frac=0.01, random_state=shuffle_seed)    # depot system re-sent ~1% of lines
+    deliveries = pd.concat([deliveries, bad, resent], ignore_index=True).sample(frac=1.0, random_state=shuffle_seed + 2)
+    print("deliveries:", deliveries._kind.value_counts().to_dict(), "| re-sent duplicates:", len(resent))
+
+    # --- Order events: delivery blocks (evidence), plus blocks that were later released -----------------
+    ev = []
+
+    def order_events(cells, statuses, kind):
+        sid, upc = ids(cells)
+        n = len(cells)
+        oid = np.array([f"PO{date.replace('-', '')}{kind[:2].upper()}{i:06d}" for i in range(n)])
+        t1 = pd.Timestamp(date) - pd.to_timedelta(r2.uniform(20, 40, n), unit="h")
+        for step, status in enumerate(statuses):
+            keep = np.ones(n, bool) if step == 0 else status[1]
+            st = status if step == 0 else status[0]
+            ts = (t1 + pd.to_timedelta(6 * step, unit="h"))[keep]
+            ev.append(pd.DataFrame({
+                "order_id": oid[keep], "store_id": sid[keep], "upc": upc[keep], "status": st,
+                "block_reason": r2.choice(BLOCK_REASONS, int(keep.sum())) if st == "BLOCKED" else None,
+                "event_ts": ts.floor("min").strftime("%Y-%m-%dT%H:%M:00Z"), "_kind": kind}))
+
+    c = np.flatnonzero(rank == RANK["ORDER_DELIVERY_BLOCK"])
+    order_events(c, ["BLOCKED", ("CANCELLED", r2.random(c.size) < 0.2)], "truth_block")
+    c = pick((rank >= 1) & (rank < RANK["ORDER_DELIVERY_BLOCK"]), p=0.10)
+    order_events(c, ["BLOCKED"], "secondary_block")
+    c = pick(rank == 0, n=20_000, w=warning("ORDER_DELIVERY_BLOCK"))
+    order_events(c, ["BLOCKED"], "open_block_healthy_shelf")
+    c = np.concatenate([pick(rank > RANK["ORDER_DELIVERY_BLOCK"], p=0.08), pick(rank == 0, n=20_000)])
+    order_events(c, ["BLOCKED", ("RELEASED", np.ones(c.size, bool))], "released_block")
+    order_events_df = pd.concat(ev, ignore_index=True)
+    order_events_df.insert(0, "event_id", [f"OE{i:07d}" for i in range(len(order_events_df))])
+    order_events_df["business_date"] = date
+    print("order events:", order_events_df._kind.value_counts().to_dict())
+
+    # --- Stock counts: phantom stock (evidence), plus found stock and transfers --------------------------
+    cnt = []
+
+    def counts(cells, units, reason, kind):
+        sid, upc = ids(cells)
+        cnt.append(pd.DataFrame({"business_date": date, "store_id": sid, "upc": upc,
+                                 "adjustment_reason": reason, "adjustment_units": units,
+                                 "counted_at": stamps(len(cells), 2, 20), "_kind": kind}))
+
+    c = np.flatnonzero(rank == RANK["STOCKFILE_ADJUSTMENT"])
+    counts(c, -q_sf[c], "STOCK_COUNT", "truth_phantom")
+    c = pick((rank >= 1) & (rank < RANK["STOCKFILE_ADJUSTMENT"]), p=0.08)
+    counts(c, -r2.integers(1, 8, c.size), "STOCK_COUNT", "secondary_phantom")
+    c = pick(rank > RANK["STOCKFILE_ADJUSTMENT"], p=0.08)
+    counts(c, r2.integers(1, 6, c.size), "STOCK_COUNT", "found_stock")
+    c = pick(rank > RANK["STOCKFILE_ADJUSTMENT"], p=0.05)
+    counts(c, -r2.integers(1, 6, c.size), "TRANSFER_OUT", "transfer_out")
+    c = pick(rank == 0, n=40_000, w=warning("STOCKFILE_ADJUSTMENT"))
+    counts(c, r2.choice([-1, 1], c.size) * r2.integers(1, 6, c.size), "STOCK_COUNT", "count_healthy_shelf")
+    stock_counts = pd.concat(cnt, ignore_index=True)
+    stock_counts.insert(0, "count_id", [f"SC{i:07d}" for i in range(len(stock_counts))])
+    print("stock counts:", stock_counts._kind.value_counts().to_dict())
+
+    # --- Waste: waste-driven gaps (evidence), plus everyday waste ---------------------------------------
+    wst = []
+
+    def waste(cells, units, kind):
+        sid, upc = ids(cells)
+        wst.append(pd.DataFrame({"business_date": date, "store_id": sid, "upc": upc, "waste_units": units,
+                                 "waste_reason": r2.choice(WASTE_REASONS, len(cells)),
+                                 "recorded_at": stamps(len(cells), 2, 26), "_kind": kind}))
+
+    c = np.flatnonzero(rank == RANK["WASTE"])
+    split = (r2.random(c.size) < 0.35) & (q_wa[c] >= 2)                       # some waste is recorded in two goes
+    first = np.where(split, 1 + np.floor(r2.random(c.size) * (q_wa[c] - 1)).astype(np.int32), q_wa[c])
+    waste(c, first, "truth_waste")
+    waste(c[split], (q_wa[c] - first)[split], "truth_waste_second_entry")
+    c = pick((rank >= 1) & (rank < RANK["WASTE"]), p=0.10)
+    waste(c, r2.integers(1, 5, c.size), "secondary_waste")
+    if warn is None:
+        c = np.flatnonzero((rank == 0) & (r2.random(N) < 0.028 * np.tile(u_wa, N_STORES)))
+    else:
+        c = pick(rank == 0, p=0.028 * np.tile(u_wa, N_STORES), w=warning("WASTE"))
+    waste(c, r2.integers(1, 4, c.size), "waste_healthy_shelf")
+    waste_df = pd.concat(wst, ignore_index=True)
+    waste_df.insert(0, "waste_id", [f"WE{i:07d}" for i in range(len(waste_df))])
+    print("waste:", waste_df._kind.value_counts().to_dict())
+
+    # --- Allocations: market shortages (evidence), plus full and promotional allocations -----------------
+    alc = []
+
+    def allocations(cells, requested, allocated, reason, kind):
+        sid, upc = ids(cells)
+        alc.append(pd.DataFrame({"business_date": date, "store_id": sid, "upc": upc,
+                                 "allocation_reason": reason, "requested_units": requested,
+                                 "allocated_units": allocated, "_kind": kind}))
+
+    c = np.flatnonzero(rank == RANK["SCARCITY"])
+    a = r2.integers(0, 12, c.size)
+    allocations(c, a + q_sc[c], a, "MARKET_SHORTAGE", "truth_shortage")
+    c = pick((rank == RANK["KNOWN_GAP"]) & on_scarce, p=0.4)
+    a = r2.integers(0, 12, c.size)
+    allocations(c, a + r2.integers(1, 12, c.size), a, "MARKET_SHORTAGE", "secondary_shortage")
+    c = pick((rank == 0) & on_scarce, p=0.6, w=warning("SCARCITY"))
+    a = r2.integers(3, 24, c.size)
+    allocations(c, a + r2.integers(1, 6, c.size), a, "MARKET_SHORTAGE", "shortage_healthy_shelf")
+    c = pick((rank > RANK["SCARCITY"]) & on_scarce, p=1.0)
+    a = r2.integers(3, 24, c.size)
+    allocations(c, a, a, "MARKET_SHORTAGE", "allocated_in_full")
+    c = pick((rank > RANK["SCARCITY"]) & ~on_scarce, n=3_000)
+    a = r2.integers(3, 24, c.size)
+    allocations(c, a + r2.integers(1, 6, c.size), a, "PROMO_ALLOCATION", "promo_cap")
+    allocations_df = pd.concat(alc, ignore_index=True)
+    allocations_df.insert(0, "allocation_id", [f"AL{i:07d}" for i in range(len(allocations_df))])
+    print("allocations:", allocations_df._kind.value_counts().to_dict())
+    return types.SimpleNamespace(
+        rank=rank, iss=iss, lowt=lowt, forecast=forecast, pres_min=pres_min, capacity=capacity, sales=sales,
+        on_hand=on_hand, exiting=exiting, deliveries=deliveries, bad=bad, resent=resent, order_events=order_events_df,
+        stock_counts=stock_counts, waste=waste_df, allocations=allocations_df)
+
+
+import types
+
+r2 = np.random.default_rng(SEED + 1)      # second stream: feed detail (the placement above is unchanged)
+day = synthesize(anchor_exc, r2, ANCHOR)
 
 # COMMAND ----------
 
 # MAGIC %md ## Master data
-# MAGIC Prices, shelf lives and service levels are synthetic. Twenty-five products are re-issued with a later price change,
-# MAGIC so the pipeline has to keep the latest version.
+# MAGIC Prices, shelf lives and service levels are synthetic, and the same on every day. Twenty-five products are re-issued
+# MAGIC with a price change from 14 Oct 2026, so the pipeline has to keep the latest version.
 
 # COMMAND ----------
 
@@ -701,9 +880,8 @@ products = pd.DataFrame({
 reissued = products.sample(25, random_state=SEED).copy()
 reissued["unit_price_gbp"] = np.round(reissued.unit_price_gbp + 0.20, 2)
 reissued["effective_date"] = "2026-10-14"
-products = pd.concat([products, reissued], ignore_index=True)
-daily_sales = float((forecast.reshape(N_STORES, N_UPCS) * price[None, :]).sum())
-print(f"Sales base: GBP {daily_sales / 1e6:.1f}m of forecast demand a day, about GBP {daily_sales * 364 / 1e9:.1f}bn a year")
+if BUSINESS_DATE >= "2026-10-14":                                        # the re-issue doesn't exist before it's issued
+    products = pd.concat([products, reissued], ignore_index=True)
 
 stores_df = pd.DataFrame({
     "store_id": S.store_id.to_numpy(), "store_name": S.store.to_numpy(), "division": S.division.to_numpy(),
@@ -717,13 +895,23 @@ suppliers_df = pd.DataFrame({
 depots_df = pd.DataFrame({"depot_id": [DEPOT_ID[n] for n, _ in DEPOTS], "depot_name": [n for n, _ in DEPOTS],
                           "region_served": [r for _, r in DEPOTS], "effective_date": "2026-09-01"})
 
+if DAY:                                    # now the business date itself, with its own draws
+    day = synthesize(exc, day_draws(BUSINESS_DATE, 6), BUSINESS_DATE, WARN, CLOSENESS)
+rank, iss, lowt, exiting = day.rank, day.iss, day.lowt, day.exiting
+forecast, pres_min, capacity, sales, on_hand = day.forecast, day.pres_min, day.capacity, day.sales, day.on_hand
+deliveries, bad, resent, order_events_df = day.deliveries, day.bad, day.resent, day.order_events
+stock_counts, waste_df, allocations_df = day.stock_counts, day.waste, day.allocations
+daily_sales = float((forecast.reshape(N_STORES, N_UPCS) * price[None, :]).sum())
+print(f"Sales base: GBP {daily_sales / 1e6:.1f}m of forecast demand a day, about GBP {daily_sales * 364 / 1e9:.1f}bn a year")
+
 # COMMAND ----------
 
 # MAGIC %md ## Write the files
 
 # COMMAND ----------
 
-manifest = {"business_date": BUSINESS_DATE, "generated_by": "data/01_land_raw_feeds", "seed": SEED, "feeds": {}}
+manifest = {"business_date": BUSINESS_DATE, "generated_by": "data/01_land_raw_feeds", "seed": SEED,
+            "anchor_date": ANCHOR, "days_from_anchor": DAY, "feeds": {}}
 
 
 def folder(feed):
@@ -791,15 +979,16 @@ expected = {
     "lows": int((exc.issue == "LOW").sum()), "sales_lows": int((exc.low_issue == "SALES_LOW").sum()),
     "space_lows": int((exc.low_issue == "SPACE_LOW").sum()),
     "owned_product_locations": int((S.business_scope == "Owned").sum() * N_UPCS),
-    "reason_mix": {r: g + lw for r, g, lw, _ in TARGETS},
-    "supplier_short_types": exc.loc[cr == "SUPPLIER_SHORT"].supplier_short_type.value_counts().to_dict(),
+    "reason_mix": {r: int((exc.consensus_reason == r).sum()) for r, *_ in TARGETS},
+    "supplier_short_types": exc.loc[exc.consensus_reason == "SUPPLIER_SHORT"].supplier_short_type.value_counts().to_dict(),
     "malformed_delivery_lines": int(len(bad)), "duplicate_delivery_lines": int(len(resent)),
     "daily_forecast_sales_gbp": round(daily_sales, 2),
 }
 with open(f"{ANSWER_KEY}/expected_counts.json", "w") as f:
     json.dump(expected, f, indent=2)
-assert expected["gaps"] == 133765 and expected["lows"] == 72069
-assert expected["sales_lows"] == 36099 and expected["space_lows"] == 35970 and expected["owned_product_locations"] == 4908000
+if DAY == 0:                                                   # the anchor's headline counts are pinned
+    assert expected["gaps"] == 133765 and expected["lows"] == 72069
+    assert expected["sales_lows"] == 36099 and expected["space_lows"] == 35970 and expected["owned_product_locations"] == 4908000
 print(json.dumps(expected, indent=2))
 
 # COMMAND ----------

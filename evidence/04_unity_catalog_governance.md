@@ -1,6 +1,6 @@
 # Unity Catalog governance
 
-_Generated 2026-10-18 14:18 UTC by `scripts/collect_evidence.py` from the live workspace. Larkwell Foods is fictitious; all data is synthetic._
+_Generated 2026-10-19 08:08 UTC by `scripts/collect_evidence.py` from the live workspace. Larkwell Foods is fictitious; all data is synthetic._
 
 ## Governed tags
 
@@ -12,6 +12,7 @@ _Generated 2026-10-18 14:18 UTC by `scripts/collect_evidence.py` from the live w
 | column | ops.app_user_roles.email | data_classification | pii |
 | schema | bronze | layer | bronze |
 | schema | gold | layer | gold |
+| schema | ml | layer | ml |
 | schema | ops | layer | ops |
 | schema | raw | layer | raw |
 | schema | silver | layer | silver |
@@ -27,17 +28,20 @@ _Generated 2026-10-18 14:18 UTC by `scripts/collect_evidence.py` from the live w
 | table | gold.dim_supplier | domain | retail |
 | table | gold.product_location_status | data_classification | internal |
 | table | gold.product_location_status | domain | retail |
+| table | ml.gap_risk_features | data_classification | internal |
+| table | ml.gap_risk_features | domain | retail |
 | table | ops.app_user_roles | data_classification | confidential |
 
 ## Least privilege for the app
 
-The app reads gold and ops only and can't write to the lakehouse at all: its writes go to Lakebase and come back through Lakehouse Sync.
+The app reads gold, ops and ml (the gap-risk predictions) only, and can't write to the lakehouse at all: its writes go to Lakebase and come back through Lakehouse Sync.
 
 | object | app service principal privileges |
 |---|---|
 | CATALOG larkwell_osa | USE CATALOG |
 | SCHEMA larkwell_osa.gold | SELECT, USE SCHEMA |
 | SCHEMA larkwell_osa.ops | SELECT, USE SCHEMA |
+| SCHEMA larkwell_osa.ml | SELECT, USE SCHEMA |
 | SCHEMA larkwell_osa.silver | none |
 | SCHEMA larkwell_osa.bronze | none |
 
@@ -65,6 +69,16 @@ The app reads gold and ops only and can't write to the lakehouse at all: its wri
 | larkwell_osa.silver.store_stock | larkwell_osa.gold.product_location_status |
 | larkwell_osa.silver.waste_events | larkwell_osa.gold.product_location_status |
 | larkwell_osa.ops.lb_scan_log_history | larkwell_osa.gold.shelf_scans |
+| larkwell_osa.gold.dim_product | larkwell_osa.ml.gap_risk_features |
+| larkwell_osa.gold.dim_store | larkwell_osa.ml.gap_risk_features |
+| larkwell_osa.silver.allocations | larkwell_osa.ml.gap_risk_features |
+| larkwell_osa.silver.delivery_lines | larkwell_osa.ml.gap_risk_features |
+| larkwell_osa.silver.order_status | larkwell_osa.ml.gap_risk_features |
+| larkwell_osa.silver.stock_counts | larkwell_osa.ml.gap_risk_features |
+| larkwell_osa.silver.store_stock_history | larkwell_osa.ml.gap_risk_features |
+| larkwell_osa.silver.waste_events | larkwell_osa.ml.gap_risk_features |
+| larkwell_osa.gold.dim_product | larkwell_osa.ml.gap_risk_scores |
+| larkwell_osa.gold.dim_store | larkwell_osa.ml.gap_risk_scores |
 | larkwell_osa.bronze.allocations | larkwell_osa.silver.allocations |
 | larkwell_osa.bronze.deliveries | larkwell_osa.silver.delivery_lines |
 | larkwell_osa.bronze.depot_master | larkwell_osa.silver.depots |
@@ -72,6 +86,7 @@ The app reads gold and ops only and can't write to the lakehouse at all: its wri
 | larkwell_osa.bronze.product_master | larkwell_osa.silver.products |
 | larkwell_osa.bronze.stock_counts | larkwell_osa.silver.stock_counts |
 | larkwell_osa.bronze.store_stock | larkwell_osa.silver.store_stock |
+| larkwell_osa.bronze.store_stock | larkwell_osa.silver.store_stock_history |
 | larkwell_osa.bronze.store_master | larkwell_osa.silver.stores |
 | larkwell_osa.bronze.supplier_master | larkwell_osa.silver.suppliers |
 | larkwell_osa.bronze.waste | larkwell_osa.silver.waste_events |

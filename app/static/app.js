@@ -1,6 +1,6 @@
 /* Larkwell Shelf Availability — frontend JS (fictitious retailer, synthetic data)
    36-column schema, product/store hierarchy, consensus_reason + consensus_reason_retail
-   Personas: Head Office (Store / Category) | Retail (Regional Manager / Store Manager) */
+   Personas: Support Centre (Store / Category) | Retail (Regional Manager / Store Manager) */
 
 // --- Feedback Context ---
 var messageContext = {};  // msgId → {question, answer, sql}
@@ -111,7 +111,7 @@ function applyRoleDefaults(role) {
     var allowed = role.allowed_personas || [];
     dropdown.innerHTML = '';
     if (allowed.indexOf('support_centre') !== -1) {
-      dropdown.innerHTML += '<option value="support_centre">Head Office</option>';
+      dropdown.innerHTML += '<option value="support_centre">Support Centre</option>';
     }
     if (allowed.indexOf('retail') !== -1) {
       dropdown.innerHTML += '<option value="retail">Retail</option>';
@@ -215,7 +215,7 @@ function updateNavTabs() {
 function updateSidebarVisibility() {
   var storeSection = document.getElementById('store-section');
   var divSection = document.getElementById('division-section');
-  // Store dropdown: Head Office Store (briefing/chat) OR Retail Store Manager (all tabs)
+  // Store dropdown: Support Centre Store (briefing/chat) OR Retail Store Manager (all tabs)
   var showStore = (AppState.persona === 'support_centre' && AppState.subView === 'store' &&
     (AppState.currentTab === 'briefing' || AppState.currentTab === 'chat')) ||
     (AppState.persona === 'retail' && AppState.subView === 'store_manager');
@@ -357,7 +357,7 @@ function onStoreChange() {
     updateBreadcrumb();
     if (AppState.currentTab === 'dashboard') loadDashboard();
   } else {
-    // Head Office: store selection loads briefing but stays on current tab if chat
+    // Support Centre: store selection loads briefing but stays on current tab if chat
     if (AppState.currentTab === 'chat') {
       // Stay on chat — just update the store context
       loadBriefing(store);
@@ -667,7 +667,7 @@ function renderToggles() {
     html += toggleBtn('space', 'Space', AppState.lowFilter, 'setLowFilter');
     html += '</div>';
   }
-  // Scope toggle (only for Head Office)
+  // Scope toggle (only for Support Centre)
   if (AppState.persona === 'support_centre') {
     html += '<span class="toggle-sep"></span>';
     html += '<div class="toggle-group">';
@@ -1105,7 +1105,7 @@ function destroyChart(key) {
 }
 
 // ================================================================
-// PIVOT TABLE — Reason Code Breakdown (Head Office Store view)
+// PIVOT TABLE — Reason Code Breakdown (Support Centre Store view)
 // ================================================================
 
 var PIVOT_COLS = [
@@ -1362,9 +1362,57 @@ function renderBriefing(data) {
     html += '</div>';
   }
 
+  // Tomorrow: the gap-risk model's watch list for this store (loaded separately, so the briefing never waits for it)
+  html += '<div id="briefing-tomorrow"></div>';
+
   html += '</div>'; // close briefing-printable
 
   el.innerHTML = html;
+  if (AppState.selectedStore) loadBriefingTomorrow(AppState.selectedStore);
+}
+
+function loadBriefingTomorrow(storeName) {
+  fetch('/api/gap-risk?store=' + encodeURIComponent(storeName))
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var el = document.getElementById('briefing-tomorrow');
+      if (el && AppState.selectedStore === storeName) el.innerHTML = renderTomorrow(d);
+    })
+    .catch(function() {});
+}
+
+function pctText(v) {
+  return (v === null || v === undefined || v === '') ? '-' : Math.round(parseFloat(v) * 100) + '%';
+}
+
+function riskTable(rows, showStatus) {
+  var html = '<div class="table-wrapper"><table><thead><tr><th>Product</th><th>Category</th>' + (showStatus ? '<th>This morning</th>' : '') +
+    '<th class="num">Chance empty</th><th>Why</th></tr></thead><tbody>';
+  rows.forEach(function(r) {
+    var why = [r.reason_1, r.reason_2, r.reason_3].filter(function(x) { return x; }).join(' · ');
+    var status = r.status_today === 'GAP' ? '<span class="badge badge-gap">Empty</span>' : '<span class="badge badge-low">Low</span>';
+    html += '<tr><td>' + escHtml(r.product) + '</td><td>' + escHtml(r.category) + '</td>' + (showStatus ? '<td>' + status + '</td>' : '') +
+      '<td class="num"><span class="risk-pill">' + pctText(r.risk) + '</span></td><td class="risk-why">' + escHtml(why) + '</td></tr>';
+  });
+  return html + '</tbody></table></div>';
+}
+
+function renderTomorrow(d) {
+  if (!d || !d.available) return '';
+  var m = d.model || {}, met = (m.metrics || {})['all.list_precision'] || {}, g = d.store_grade;
+  var html = '<div class="briefing-section-title">Tomorrow morning <span class="ml-badge">ML · ' + escHtml(m.model_name) + ' v' + escHtml(m.model_version) + '</span></div>';
+  html += '<p class="briefing-note">Predicted on ' + escHtml(d.predicted_on || '') + ' for ' + escHtml(d.target_date || '') + ' by the gap-risk model. ' +
+    'Tested on ' + escHtml(m.test_from) + ' to ' + escHtml(m.test_to) + ', a week it never saw: ' + pctText(met.model) +
+    ' of each store\'s top 25 were empty the next morning, against ' + pctText(met.today_rule) + ' for "what\'s empty or low today".';
+  if (g) html += ' Here, yesterday\'s list: <strong>' + fmtNum(g.listed_empty) + ' of ' + fmtNum(g.listed) + '</strong> were empty this morning.';
+  html += '</p>';
+  if ((d.new_risk || []).length) {
+    html += '<div class="briefing-sub">Look fine now, likely to be empty tomorrow: worth a check before close</div>' + riskTable(d.new_risk, false);
+  }
+  if ((d.fix_first || []).length) {
+    html += '<div class="briefing-sub">Fix first: today\'s gaps and lows most likely to still be empty tomorrow</div>' + riskTable(d.fix_first, true);
+  }
+  return html;
 }
 
 function exportBriefingPDF() {
@@ -1912,7 +1960,7 @@ function loadStoreActions(store) {
           ' · ' + escHtml((a.root_cause || '').replace(/_/g, ' ').toLowerCase()) + '</div></div>';
       }).join('') : '<div class="action-empty">No actions logged at this store yet. Scan a gap and record what you did.</div>';
       el.innerHTML = '<div class="action-panel-title">Actions logged at ' + escHtml(store) + '</div>' + list +
-        '<div class="action-note">Saved to Lakebase in milliseconds. Lakehouse Sync copies each action to Unity Catalog, where head office and Genie can see it.</div>';
+        '<div class="action-note">Saved to Lakebase in milliseconds. Lakehouse Sync copies each action to Unity Catalog, where the Support Centre and Genie can see it.</div>';
     })
     .catch(function() { el.innerHTML = ''; });
 }
@@ -1943,7 +1991,7 @@ function renderJourney(d) {
     return all.every(function(c) { return c.passed === 'true' || c.passed === true; }) ?
       '<span class="journey-ok">✓ checks passed</span>' : '<span class="journey-bad">check failed</span>';
   }
-  var lb = d.lakebase || {}, loop = d.loop || {};
+  var lb = d.lakebase || {}, loop = d.loop || {}, ml = d.ml || {};
   var anyCheck = (d.checks || [])[0] || {};
   var stages = [
     { n: '1', t: 'Raw files land', p: 'Lakeflow · UC volume', big: v('raw.rows_landed'), unit: 'rows in ' + v('raw.files_landed') + ' files',
@@ -1957,11 +2005,14 @@ function renderJourney(d) {
       ok: ok(['gold.exceptions', 'gold.answer_key_matches']) },
     { n: '5', t: 'Governed', p: 'Unity Catalog', big: (m['governance.availability_pct'] ? m['governance.availability_pct'].value + '%' : '-'), unit: 'on-shelf availability',
       lines: ['One metric view defines every KPI', 'Lineage, tags and least-privilege grants'], ok: ok(['governance.availability_pct']) },
-    { n: '6', t: 'Served', p: 'Lakebase', big: lb.serving_rows ? fmtNum(lb.serving_rows) : '-', unit: 'rows synced for Shelf Scan',
+    { n: '6', t: 'Predicted', p: 'MLflow · Unity Catalog model', big: ml.scored ? fmtNum(ml.scored) : '-', unit: 'lines scored for ' + (ml.target_date || 'tomorrow'),
+      lines: ['Model ml.gap_risk v' + (ml.model_version || '-') + ', the champion', 'Yesterday\'s watch lists: ' + pctText(ml.last_list_precision) + ' empty this morning'],
+      ok: ok(['ml.feature_rows', 'ml.feature_gaps_match_gold']) },
+    { n: '7', t: 'Served', p: 'Lakebase', big: lb.serving_rows ? fmtNum(lb.serving_rows) : '-', unit: 'rows synced for Shelf Scan',
       lines: ['Point lookups in milliseconds', 'Live query just now: ' + (lb.query_ms !== undefined ? Math.round(lb.query_ms) + ' ms' : '-')], ok: '' },
-    { n: '7', t: 'Intelligent', p: 'Gen AI · Genie', big: lb.recommendations !== undefined ? fmtNum(lb.recommendations) : '-', unit: 'next best actions written',
+    { n: '8', t: 'Intelligent', p: 'Gen AI · Genie', big: lb.recommendations !== undefined ? fmtNum(lb.recommendations) : '-', unit: 'next best actions written',
       lines: [(lb.scans !== undefined ? fmtNum(lb.scans) : '-') + ' Shelf Scans logged', 'Genie answers questions in plain English'], ok: '' },
-    { n: '8', t: 'Acted on', p: 'Lakebase → Unity Catalog', big: lb.actions !== undefined ? fmtNum(lb.actions) : '-', unit: 'colleague actions',
+    { n: '9', t: 'Acted on', p: 'Lakebase → Unity Catalog', big: lb.actions !== undefined ? fmtNum(lb.actions) : '-', unit: 'colleague actions',
       lines: [(loop.actions_in_uc !== undefined ? fmtNum(loop.actions_in_uc) : '-') + ' already back in Unity Catalog', 'Lakehouse Sync closes the loop'], ok: '' }
   ];
   var cards = stages.map(function(s) {

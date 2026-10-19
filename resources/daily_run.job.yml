@@ -4,7 +4,8 @@ resources:
       name: Larkwell shelf availability - daily run
       description: >
         The whole data journey for one trading day: land the raw feeds, run the Lakeflow pipeline, refresh the
-        Lakebase copy, check every stage against the answer key, then evaluate the AI's next best action.
+        Lakebase copy and check every stage against the answer key. Then, side by side: grade yesterday's gap-risk
+        predictions and predict tomorrow's gaps, and evaluate the AI's next best action.
       max_concurrent_runs: 1
       parameters:
         - name: business_date
@@ -24,6 +25,7 @@ resources:
               catalog: ${var.catalog}
               business_date: "{{job.parameters.business_date}}"
               seed: ${var.seed}
+              anchor_date: ${var.anchor_date}
           timeout_seconds: 3600
         - task_key: run_pipeline
           depends_on:
@@ -46,6 +48,15 @@ resources:
               pipeline_id: ${resources.pipelines.availability_pipeline.id}
               lakebase_catalog: ${var.catalog}_pg
           timeout_seconds: 1800
+        - task_key: predict_gap_risk
+          depends_on:
+            - task_key: validate_and_publish
+          notebook_task:
+            notebook_path: ../ml/02_score_gap_risk.py
+            base_parameters:
+              catalog: ${var.catalog}
+              business_date: "{{job.parameters.business_date}}"
+          timeout_seconds: 2700
         - task_key: evaluate_next_best_action
           depends_on:
             - task_key: validate_and_publish

@@ -1,6 +1,6 @@
 # Genie agent: benchmark evaluation
 
-_Generated 2026-10-18 14:18 UTC by `scripts/collect_evidence.py` from the live workspace. Larkwell Foods is fictitious; all data is synthetic._
+_Generated 2026-10-19 08:08 UTC by `scripts/collect_evidence.py` from the live workspace. Larkwell Foods is fictitious; all data is synthetic._
 
 Genie space over the metric view, the gold table, supplier performance and the actions and scans views. It has 9 example SQLs, a text instruction set, and 12 benchmark questions with canonical SQL. Built by `genie/build_space.py`.
 

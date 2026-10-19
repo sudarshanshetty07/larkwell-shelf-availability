@@ -1,0 +1,23 @@
+resources:
+  jobs:
+    gap_risk_training:
+      name: Larkwell shelf availability - gap-risk training
+      description: >
+        Weekly: retrain the gap-risk model on the latest three weeks, test it on the following week, and register it in
+        Unity Catalog. Only a version that passes every gate (better than both rules, calibrated, no worse than the
+        current champion) takes the champion alias that the daily job scores with.
+      max_concurrent_runs: 1
+      schedule:
+        quartz_cron_expression: "0 0 21 ? * SUN"
+        timezone_id: Europe/London
+        pause_status: PAUSED
+      tags:
+        project: larkwell-shelf-availability
+        data: synthetic
+      tasks:
+        - task_key: train_gap_risk
+          notebook_task:
+            notebook_path: ../ml/01_train_gap_risk.py
+            base_parameters:
+              catalog: ${var.catalog}
+          timeout_seconds: 5400

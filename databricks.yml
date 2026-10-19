@@ -1,6 +1,7 @@
 # Declarative Automation Bundle: everything that runs on a schedule or serves users.
 # Lakebase objects (project, synced table, Lakehouse Sync) and the Genie space are created by lakebase/setup.sh
-# and genie/build_space.py, because bundles don't manage them yet.
+# and genie/build_space.py, because bundles don't manage them yet. The gap-risk model is registered in Unity Catalog
+# by its training notebook (ml/01_train_gap_risk.py).
 bundle:
   name: larkwell-shelf-availability
 
@@ -20,10 +21,13 @@ variables:
     default: larkwell_osa
   business_date:
     description: Trading day the source systems are simulated for
-    default: "2026-10-17"
+    default: "2026-10-19"
   seed:
-    description: Generator seed; the same seed reproduces the same day exactly
+    description: Generator seed; the same seed and date always reproduce the same day exactly
     default: "20261017"
+  anchor_date:
+    description: The pinned trading day (exact headline counts); every other date is rolled from it day by day
+    default: "2026-10-19"
   warehouse_id:
     description: SQL warehouse for the app's dashboards and for Genie
   llm_endpoint:

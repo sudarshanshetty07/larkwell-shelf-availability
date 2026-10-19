@@ -5,22 +5,22 @@ Each decision lists the option chosen, the main alternative, and why.
 ## 1. Root cause is a rules cascade, not a model
 - **Chosen:** eight evidence checks in a fixed priority order, written in SQL in the gold layer. Upstream causes come first, then store causes, then demand (`pipeline/gold/product_location_status.sql`).
 - **Alternative:** a classifier trained on labelled gaps.
-- **Why:** a store colleague and an availability analyst both need to know *why* a line is flagged, and the rule that fired is the explanation. It's deterministic, auditable, and testable row by row against the answer key (205,834 of 205,834 match). It attributes 98% of gaps and lows; the remaining 2% are flagged INVESTIGATE rather than guessed. ML belongs on *prediction*, such as which lines will gap tomorrow, which is the next phase.
+- **Why:** a store colleague and an availability analyst both need to know *why* a line is flagged, and the rule that fired is the explanation. It's deterministic, auditable, and testable row by row against the answer key (205,834 of 205,834 match). It attributes 98% of gaps and lows; the remaining 2% are flagged INVESTIGATE rather than guessed. Machine learning is used where it beats rules: predicting which lines will be empty *tomorrow* (§14).
 
 ## 2. Lakeflow Spark Declarative Pipelines, written in SQL
-- **Chosen:** 25 small SQL files, one dataset per file. Bronze streaming tables use Auto Loader; silver and gold are materialized views.
+- **Chosen:** 27 small SQL files, one dataset per file. Bronze streaming tables use Auto Loader; silver, gold and the model's features are materialized views.
 - **Alternative:** notebooks with hand-written merge logic.
 - **Why:**
   - lineage, expectations and incremental ingestion come built in;
   - the logic stays readable by an analyst;
   - Auto Loader only reads new files, so day two ingested just day two's 23 files.
-- **Trade-off:** materialized views recompute fully when their inputs change. At 5.4M rows that takes seconds on serverless; at much larger scale I'd make gold incremental.
+- **Trade-off:** materialized views recompute fully when their inputs change. Gold is 5.4M rows; the stock history and the model's features hold six weeks (about 200M rows), which is what makes the daily update take minutes rather than seconds. At much larger scale I'd make gold and the features incremental (§15).
 
 ## 3. Lakebase for Shelf Scan, the warehouse for analytics
 - **Chosen:** Unity Catalog syncs the gold table into Lakebase. Shelf Scan does a primary-key lookup there, and dashboards query the warehouse.
 - **Alternative:** serve everything from the SQL warehouse.
 - **Why:** a handheld scan is an OLTP point lookup, made by thousands of colleagues at once.
-  - Measured inside the app, Lakebase answers in 2.9 ms at the median; the warehouse takes 504 ms for the same row, 174 times slower. Across test runs it has ranged from about 2 to 3 ms against 0.5 to 0.7 s: 174 to 246 times faster.
+  - Measured inside the app, Lakebase answers in 2.5 ms at the median; the warehouse takes 634 ms for the same row, 259 times slower. Across test runs it has ranged from about 2 to 3 ms against 0.5 to 0.7 s: well over 100 times faster every time.
   - The warehouse stays as a fallback, so a scan always answers.
 - **Trade-off:** a second copy of the data. It's a governed, read-only synced copy that Unity Catalog manages, so it can't drift.
 
@@ -64,7 +64,7 @@ Each decision lists the option chosen, the main alternative, and why.
 - **Why:** the questions shown in a demo or a morning meeting must never vary. Free-form questions show Genie's flexibility, and both kinds of answer are labelled honestly.
 
 ## 10. Synthetic data with an answer key
-- **Chosen:** a seeded generator plays the source systems and writes an answer key the pipeline never reads.
+- **Chosen:** a seeded generator plays the source systems and writes an answer key the pipeline never reads. One anchor day is pinned, and the days around it vary (§16).
 - **Alternative:** a public dataset.
 - **Why:** no public dataset has store-by-line availability with root causes. The answer key lets the build *prove* the pipeline is right on every run.
   - Realistic noise is built in: 29% of exceptions carry more than one kind of evidence, and there are re-sent duplicates, malformed records and master-data corrections.
@@ -88,10 +88,50 @@ Re-landing a trading day that had already been ingested taught two things.
 
 The evidence keeps both failed runs, so the record shows what the checks are for.
 
+## 14. Predicting tomorrow's gaps: a gradient-boosted model, judged against the rules a store already has
+- **Chosen:** LightGBM, predicting the day before whether each ranged product-location will be empty the next morning for an unplanned reason. It uses 34 features (`ml/gap_risk.py`), is trained on three weeks and tested on the following week, which it never sees. It's logged to MLflow and registered in Unity Catalog as `ml.gap_risk`.
+- **Alternatives:** a time-series forecast of every line's stock, or a deep sequence model.
+- **Why:**
+  - The question is a yes or no about tomorrow morning, asked of 5.4 million product-locations every day. Gradient-boosted trees on tabular features are the standard tool for that: fast to train and score, and robust to the mix of counts, rates and flags.
+  - Every prediction comes with its reasons. The model's own per-feature contributions (SHAP values) are turned into plain English ("Today's delivery came 6 short", "Empty on 3 of the last 7 days"), so a store sees why a line is on its list.
+  - It isn't compared with chance. It has to beat the two rules a store could use without it: what's empty or low this morning, and lowest stock against forecast.
+- **What it's not:** it doesn't replace the root-cause rules. The rules explain this morning, row by row; the model ranks tomorrow's risk. A planned range exit is never predicted, because it's already known.
+- **Gates:** a new version takes the `champion` alias, which the daily job scores with, only if:
+  - it beats both rules by set margins;
+  - its probabilities are calibrated;
+  - it's no worse than the current champion on the same test week;
+  - every data check passed.
+  A version that fails is registered as `challenger` and never scored.
+- **Graded every morning:** the daily job checks yesterday's predictions against the shelves the pipeline has just reported, before it makes today's (`ops.gap_risk_grades`). So the model is marked every day, not only when it's trained.
+- **Trade-off:** it's trained on simulated history, so its accuracy here only proves the method works. The pilot retrains it on real history, and measures the share of gaps prevented against control stores.
+
+## 15. Features in the pipeline, labels outside it
+- **Chosen:** the Lakeflow pipeline builds `ml.gap_risk_features`: one row per product-location per day, from that day's feeds and the six days before. Training joins on the label, the next morning's shelf, at training time. Scoring reads today's rows.
+- **Alternative:** compute features in the training notebook and again in the scoring notebook.
+- **Why:**
+  - **One definition.** Training and scoring use the same features, so they can't drift apart.
+  - **No leakage.** Nothing from the future can reach the model, because the label never goes into the features table.
+  - **Governed like gold.** The features get expectations, lineage, tags and the daily checks. For example, today's count of unplanned gaps in the features must equal gold's.
+- **Trade-off:** the features table is recomputed every day over six weeks of history. That's a few minutes on serverless. In production I'd keep the history in a feature table appended once a day, and use Unity Catalog's feature engineering for point-in-time lookups.
+
+## 16. History: one pinned day, and a day-to-day process around it
+- **Problem:** every simulated trading day used the same seed, so every day showed the same exceptions. A model trained on that would learn nothing real.
+- **Chosen:** the anchor day, 19 October 2026, stays pinned. Its headline counts are exact, and the generator reproduces it byte for byte, so the business case and every earlier piece of evidence still hold. Any other date is the anchor rolled one day at a time (`data/01_land_raw_feeds.py`):
+  - **Trouble carries over.** Each product-location has a hidden score for each cause, which drifts a little each day: a first-order autoregressive process, started from the anchor's own random draws. Each day's exceptions are still the lines with the highest weight plus score, exactly as on the anchor.
+  - **Good and bad spells.** Supplier, depot and store reliability drift, and market shortages come and go.
+  - **Warning signs.** Lines that came close to failing get more than their share of the day's short deliveries, blocked orders, stock counts, waste and cut allocations, and thinner shelves. Most warning signs never become a gap, and many gaps come with no warning.
+  - **The week.** Volumes and demand follow the day of the week.
+  - **Same checks.** Every day passes the same row-by-row self-check against its own answer key.
+- **How it was tuned:** to realistic persistence, not to make the model look good. About 47% of today's unplanned gaps are still empty tomorrow. A warning sign makes a gap tomorrow 3 to 8 times more likely than on a healthy shelf. Thin shelves matter, but less. The tuning used the rules as baselines, so a model can only win by learning something the rules miss.
+- **Trade-off:** the model can only be as realistic as the simulation. That's why the pilot retrains it on real history before anyone relies on it.
+
 ## What production would add
 - Intraday stock feeds and continuous sync.
 - On-behalf-of-user auth, so Unity Catalog row filters apply per colleague.
 - Lakehouse Sync out of Beta.
-- A gap-risk prediction model.
+- For the gap-risk model:
+  - a year or more of real history, with the promotions calendar and weather as features;
+  - an incremental feature table;
+  - drift monitoring on the inputs and the daily grades.
 - Alerting on the daily checks.
 - CI that runs the bundle validation and the answer-key test on every change.

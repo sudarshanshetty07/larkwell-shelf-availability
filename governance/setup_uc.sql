@@ -5,6 +5,7 @@ CREATE SCHEMA IF NOT EXISTS larkwell_osa.bronze COMMENT 'Bronze: raw feeds inges
 CREATE SCHEMA IF NOT EXISTS larkwell_osa.silver COMMENT 'Silver: typed, de-duplicated, quality-checked feeds (Lakeflow expectations)';
 CREATE SCHEMA IF NOT EXISTS larkwell_osa.gold COMMENT 'Gold: one governed status and root cause per product-location, plus dimensions and actions';
 CREATE SCHEMA IF NOT EXISTS larkwell_osa.ops COMMENT 'Operations: app access control, AI evaluation results and the Lakebase change history of colleague actions';
+CREATE SCHEMA IF NOT EXISTS larkwell_osa.ml COMMENT 'Machine learning: the gap-risk features (built by the pipeline), the registered gap-risk model and its daily predictions';
 CREATE VOLUME IF NOT EXISTS larkwell_osa.raw.landing COMMENT 'Daily raw extracts landed by the source systems (CSV and JSON lines)';
 CREATE VOLUME IF NOT EXISTS larkwell_osa.raw.answer_key COMMENT 'Answer key written by the data generator to test the pipeline. The pipeline never reads it.';
 -- Governed tags (the workspace's tag policies restrict these values)
@@ -14,3 +15,4 @@ ALTER SCHEMA larkwell_osa.bronze SET TAGS ('layer' = 'bronze');
 ALTER SCHEMA larkwell_osa.silver SET TAGS ('layer' = 'silver');
 ALTER SCHEMA larkwell_osa.gold SET TAGS ('layer' = 'gold');
 ALTER SCHEMA larkwell_osa.ops SET TAGS ('layer' = 'ops');
+ALTER SCHEMA larkwell_osa.ml SET TAGS ('layer' = 'ml');

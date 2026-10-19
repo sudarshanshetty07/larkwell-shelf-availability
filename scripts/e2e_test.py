@@ -1,8 +1,9 @@
 """End-to-end test of the deployed Larkwell Shelf Availability app.
 
 Exercises every stage a user touches: dashboards and drill-downs (SQL warehouse), Shelf Scan (Lakebase), the next best
-action (LLM), colleague actions flowing Lakebase -> Lakehouse Sync -> Unity Catalog, curated analyses, Genie answers
-with result tables, feedback, and the Data Journey checks. Ends with a latency comparison of Lakebase and the warehouse.
+action (LLM), colleague actions flowing Lakebase -> Lakehouse Sync -> Unity Catalog, tomorrow's watch list from the
+gap-risk model, curated analyses, Genie answers with result tables, feedback, and the Data Journey checks. Ends with a
+latency comparison of Lakebase and the warehouse.
 
 Writes one test action and one feedback row (both clearly marked as tests).
 
@@ -68,7 +69,7 @@ html = r.text
 check("page loads", r.status_code == 200, f"{len(html)} bytes")
 check("page title", "<title>Larkwell Shelf Availability</title>" in html)
 check("navigation includes Shelf Scan and Data Journey", "Shelf Scan" in html and "Data Journey" in html)
-js, _ = get("/static/app.js?v=8")
+js, _ = get("/static/app.js?v=11")
 check("no scripted 'thinking' messages in the frontend", "_loadSteps" not in js.text and "Composing your answer" not in js.text)
 
 # ---------------------------------------------------------------- reference endpoints
@@ -169,9 +170,31 @@ for _ in range(40):
 check("action reached Unity Catalog via Lakehouse Sync", seen_after is not None and rows[0]["root_cause"] == "SUPPLIER_SHORT",
       f"visible in gold.colleague_actions after {seen_after:.0f}s" if seen_after else "not seen within 400s")
 
+# ---------------------------------------------------------------- tomorrow's watch list: the gap-risk model (ML)
+w, t = get("/api/gap-risk", store=STORE)
+wj = w.json() if w.status_code == 200 else {}
+listed = wj.get("new_risk", []) + wj.get("fix_first", [])
+risks = [float(r["risk"]) for r in wj.get("new_risk", [])]
+check("watch list: 10 lines that look fine and 5 to fix first, each with a reason",
+      wj.get("available") and len(wj.get("new_risk", [])) == 10 and len(wj.get("fix_first", [])) == 5
+      and all(r.get("reason_1") for r in listed), f"model v{wj.get('model', {}).get('model_version')}, {t:.1f}s")
+check("watch list is ranked by a probability", risks == sorted(risks, reverse=True) and all(0 < x < 1 for x in risks),
+      f"top risk {risks[0]:.0%}" if risks else "")
+top = sql(f"SELECT product FROM {CATALOG}.ml.gap_risk_scores WHERE store = '{STORE}' AND looks_fine AND "
+          f"business_date = (SELECT MAX(business_date) FROM {CATALOG}.ml.gap_risk_scores) ORDER BY risk DESC LIMIT 1")
+check("watch list matches the predictions table in Unity Catalog", top and wj["new_risk"][0]["product"] == top[0]["product"],
+      top[0]["product"] if top else "")
+met = {k: float(v) for k, v in wj.get("model", {}).get("metrics", {}).get("all.list_precision", {}).items() if v not in (None, "")}
+check("champion beat the today rule on its unseen test week", met and met["model"] > met["today_rule"],
+      f"{met.get('model', 0):.0%} vs {met.get('today_rule', 0):.0%} of watch-list lines empty next morning")
+grades = wj.get("model", {}).get("recent_grades", [])
+check("the model is graded every morning", len(grades) >= 7 and wj.get("store_grade"),
+      f"last {len(grades)} mornings; {STORE} yesterday's list: {wj.get('store_grade', {}).get('listed_empty')} of "
+      f"{wj.get('store_grade', {}).get('listed')} empty")
+
 # ---------------------------------------------------------------- chat: curated analyses and Genie
 qs = get("/api/suggested-questions")[0].json().get("questions", [])
-check("three curated questions offered", len(qs) == 3)
+check("four curated questions offered", len(qs) == 4)
 for q in qs:
     t0 = time.perf_counter()
     c = S.post(APP + "/api/chat", json={"message": q, "store_name": STORE}, timeout=120).json()
@@ -191,7 +214,9 @@ check("feedback accepted", fb.status_code == 200 and fb.json().get("status") == 
 jj = get("/api/journey")[0].json()
 checks = jj.get("checks", [])
 check("Data Journey: the daily run's checks are published and all passed",
-      len(checks) >= 40 and all(c["passed"] in (True, "true") for c in checks), f"{len(checks)} checks")
+      len(checks) >= 43 and all(c["passed"] in (True, "true") for c in checks), f"{len(checks)} checks")
+check("Data Journey: tomorrow's predictions cover every ranged line", int(jj.get("ml", {}).get("scored") or 0) > 5_000_000,
+      json.dumps(jj.get("ml")))
 check("Data Journey: Lakebase holds every product-location", int(jj.get("lakebase", {}).get("serving_rows", 0)) == 5400000,
       json.dumps(jj.get("lakebase")))
 

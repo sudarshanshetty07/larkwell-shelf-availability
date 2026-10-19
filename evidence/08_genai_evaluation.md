@@ -1,10 +1,10 @@
 # Gen AI: evaluation of the next best action
 
-_Generated 2026-10-18 14:18 UTC by `scripts/collect_evidence.py` from the live workspace. Larkwell Foods is fictitious; all data is synthetic._
+_Generated 2026-10-19 08:08 UTC by `scripts/collect_evidence.py` from the live workspace. Larkwell Foods is fictitious; all data is synthetic._
 
 MLflow GenAI evaluation of the exact prompt the app uses (`app/nba.py`), on 48 real exceptions from gold (6 per root cause). Every call is traced in MLflow. Notebook: `genai/03_evaluate_next_best_action.py`; it runs as the last task of the daily job.
 
-MLflow run `2adc3e4669ae421fb98bb7deea102a14`, prompt `nba-v4`, advice written by `databricks-claude-sonnet-4-5`, judged by `databricks:/databricks-gpt-5-5`, 48 cases.
+MLflow run `23adcc35457c484280bac8965d414c99`, prompt `nba-v4`, advice written by `databricks-claude-sonnet-4-5`, judged by `databricks:/databricks-gpt-5-5`, 48 cases.
 
 | metric | value | threshold | passed |
 |---|---|---|---|
@@ -50,6 +50,7 @@ Each run that failed found something real, and every fix was recorded. After the
 | 2026-10-18 13:43:52 | nba-v3 | 100% | 100% | 100% | 100% | 94% | below threshold |
 | 2026-10-18 14:00:47 | nba-v3 | 100% | 100% | 100% | 90% | 100% | below threshold |
 | 2026-10-18 14:08:46 | nba-v4 | 100% | 100% | 100% | 100% | 100% | all thresholds met |
+| 2026-10-19 02:40:19 | nba-v4 | 100% | 100% | 100% | 100% | 100% | all thresholds met |
 
 ## Judge calibration (this run)
 
@@ -81,19 +82,19 @@ Before scoring, each LLM judge grades fixed answers labelled by hand: good ones,
 
 | root_cause | store | product | advice |
 |---|---|---|---|
-| INVESTIGATE | Beeston Local | Mayonnaise 400g Family Pack | There's a gap on the shelf for Mayonnaise 400g Family Pack but we haven't found the cause in our system yet. Please log this with the availability analyst so they can investigate what's happened. |
-| INVESTIGATE | Cumbernauld | Baking Powder 100g Multi-Buy | The shelf is empty for Baking Powder 100g Multi-Buy and we haven't found the reason yet in our system. Please log this gap so the availability analyst can investigate what's causing it. |
-| KNOWN_GAP | Hereford Local | Organic Carrots 500g | Organic Carrots 500g is no longer part of our range and has been deliberately removed from sale. No action is needed, so please leave the shelf space as it is for now. |
-| KNOWN_GAP | Lichfield Forecourt | Seeded Batch Loaf 400g Value Pack | The Seeded Batch Loaf 400g Value Pack is no longer part of our range and has been deliberately removed. This is a planned change, so no action is needed and you should not reorder or chase the supplier. |
-| ORDER_DELIVERY_BLOCK | Ashington | Plain Bagels 4pk Twin Pack | The order for Plain Bagels 4pk Twin Pack is blocked or was cancelled at Pennine DC, which is why there's nothing on the shelf. Contact Pennine DC to ask them to release the blocked order or speed it up, but don't place a second order. |
-| ORDER_DELIVERY_BLOCK | Battersea Local | Unsalted Butter 500g Twin Pack | There's an order for Unsalted Butter 500g Twin Pack that's been blocked or cancelled, so the shelf has dropped to 2 units when it should show at least 3. Contact Riverside DC to release the blocked order or speed it up, but don't place a second order. |
-| SCARCITY | Aviemore | Sour Cream 150ml 2 for £5 | There's a market-wide shortage of Sour Cream 150ml 2 for £5, so this store's allocation was cut by 9 units and there's nothing available to send. Fill the space with an approved alternative line. |
-| SCARCITY | Dalkeith High Street | Thyme 20g Family Pack | There's a market-wide shortage of Thyme 20g Family Pack, so your allocation was cut by 4 units and the shelf is empty. Fill the space with an approved alternative line. |
-| STOCKFILE_ADJUSTMENT | Bridgwater Local | Digestives 800g Value Pack | The system thought there was stock when there wasn't, so it didn't order more. Count the shelf and stockroom now, then correct the stock file so automatic ordering can restart. |
-| STOCKFILE_ADJUSTMENT | Harrow High Street | Vanilla Yogurt 4x125g Family Pack | The system thought there were 8 units in stock so it didn't order more, but they weren't really there. Count the shelf and stockroom now, then correct the stock file so automatic ordering restarts. |
-| SUPPLIER_SHORT | Grantham Local | Organic Fusilli 500g | The last delivery was 11 units short, which is why there's a gap on the shelf. Raise a shortage query with Midshire DC for the missing units and check when the next delivery is due. |
-| SUPPLIER_SHORT | London Bridge Local | Organic Cheese & Pickle Sandwich 1pk | The last delivery arrived 11 units short, which is why there's nothing on the shelf for Organic Cheese & Pickle Sandwich 1pk. Raise a shortage query with Riverside DC for the missing units and check when the next delivery is due. |
-| UNDER_FORECAST | Dalston Local | Kalamata Olives 320g Multi-Buy | The Kalamata Olives 320g Multi-Buy sold 2 units more than expected, so the shelf is empty. Raise today's order and tell the ordering team the line is selling faster than forecast. |
-| UNDER_FORECAST | Derby Station | Tuna Steaks 4pk 2 for £5 | This product sold 6 units more than expected, so the shelf emptied faster than planned. Raise today's order and let the ordering team know it's selling faster than forecast. |
+| INVESTIGATE | Beeston Local | Mayonnaise 400g Family Pack | The system hasn't found a reason yet for the gap on the Mayonnaise 400g Family Pack shelf. Please log this for the availability analyst to investigate so they can find out what's happened and get it sorted. |
+| INVESTIGATE | Cumbernauld | Baking Powder 100g Multi-Buy | The shelf is empty for Baking Powder 100g Multi-Buy and we haven't found the reason yet in our systems. Please log this gap so the availability analyst can investigate what's causing it. |
+| KNOWN_GAP | Hereford Local | Organic Carrots 500g | Organic Carrots 500g is leaving our range as planned, so the empty shelf is expected. No action is needed, as this product won't be restocked. |
+| KNOWN_GAP | Lichfield Forecourt | Seeded Batch Loaf 400g Value Pack | The Seeded Batch Loaf 400g Value Pack is no longer part of our range and has been deliberately removed. This is a planned change, so no action is needed and there's nothing to chase or reorder. |
+| ORDER_DELIVERY_BLOCK | Ashington | Plain Bagels 4pk Twin Pack | The order for Plain Bagels 4pk Twin Pack has been blocked or cancelled at Pennine DC, which is why there's nothing on the shelf. Contact Pennine DC to ask them to release the blocked order or speed it up, but don't place a second order. |
+| ORDER_DELIVERY_BLOCK | Battersea Local | Unsalted Butter 500g Twin Pack | There's not enough stock on the shelf because an order for Unsalted Butter 500g Twin Pack has been blocked or cancelled, and it's selling faster than expected. Contact Riverside DC to release the blocked order or speed it up, but don't place a second order. |
+| SCARCITY | Aviemore | Sour Cream 150ml 2 for £5 | There's a market-wide shortage of Sour Cream 150ml 2 for £5, so your allocation was cut by 9 units and nothing is available to send. Fill the space with an approved alternative line. |
+| SCARCITY | Dalkeith High Street | Thyme 20g Family Pack | There's a market-wide shortage of Thyme 20g Family Pack, so your delivery was cut by 4 units and there's nothing left to sell. Fill the space with an approved alternative line. |
+| STOCKFILE_ADJUSTMENT | Bridgwater Local | Digestives 800g Value Pack | The system thought there was stock when there wasn't, so it didn't order more. Count the shelf and stockroom now, then update the stock file so the system can start ordering Digestives 800g Value Pack again. |
+| STOCKFILE_ADJUSTMENT | Harrow High Street | Vanilla Yogurt 4x125g Family Pack | The system thought there were 8 units in store so it didn't order more, but they weren't really there. Count the shelf and stockroom now, then correct the stock file so automatic ordering can restart. |
+| SUPPLIER_SHORT | Grantham Local | Organic Fusilli 500g | The last delivery arrived 11 units short, which is why there's nothing on the shelf for Organic Fusilli 500g. Raise a shortage query with Midshire DC for the missing units and check when the next delivery is due. |
+| SUPPLIER_SHORT | London Bridge Local | Organic Cheese & Pickle Sandwich 1pk | The last delivery arrived 11 units short, which is why there's nothing on the shelf. Raise a shortage query with Riverside DC for the missing units and check when the next delivery is due. |
+| UNDER_FORECAST | Dalston Local | Kalamata Olives 320g Multi-Buy | The Kalamata Olives 320g Multi-Buy sold more than expected today, with 2 units sold above forecast, so the shelf is empty. Raise today's order and tell the ordering team the line is selling faster than forecast. |
+| UNDER_FORECAST | Derby Station | Tuna Steaks 4pk 2 for £5 | The Tuna Steaks 4pk 2 for £5 sold 6 units more than expected, so the shelf is empty. Raise today's order and tell the ordering team the line is selling faster than forecast. |
 | WASTE | Ashford Local | Soda Bread 400g 2 for £5 | The shelf is empty because 2 units were written off as waste. Check the date codes and how the product is being handled, then ask for the order quantity on this short-life line to be reviewed. |
-| WASTE | Barbican Local | Organic Prosciutto 140g | Stock is low because 4 units were written off as waste, leaving only 1 unit on the shelf when there should be at least 3. Check the date codes and handling of this short-life product, then ask for the order quantity to be reviewed. |
+| WASTE | Barbican Local | Organic Prosciutto 140g | Stock is low because 4 units were written off as waste, leaving only 1 unit on a shelf that needs at least 3 units. Check the date codes and handling of this short-life product, then ask for the order quantity to be reviewed. |

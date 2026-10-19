@@ -1,23 +1,27 @@
 # Daily checks on every stage of the data journey
 
-_Generated 2026-10-18 14:18 UTC by `scripts/collect_evidence.py` from the live workspace. Larkwell Foods is fictitious; all data is synthetic._
+_Generated 2026-10-19 08:08 UTC by `scripts/collect_evidence.py` from the live workspace. Larkwell Foods is fictitious; all data is synthetic._
 
-`data/02_validate_and_publish.py` runs after every pipeline update and Lakebase refresh. It checks each stage of the journey and publishes the results to `ops.pipeline_checks`, which the app's Data Journey tab reads. The job fails if any check fails.
+`data/02_validate_and_publish.py` runs after every pipeline update and Lakebase refresh. It checks each stage of the journey, including the gap-risk model's inputs, and publishes the results to `ops.pipeline_checks`, which the app's Data Journey tab reads. The job fails if any check fails.
 
 ## Every check run
 
 | run at (UTC) | business date | passed | note |
 |---|---|---|---|
-| 2026-10-18 11:16:22 | 2026-10-17 | 40 of 40 |  |
-| 2026-10-18 12:01:04 | 2026-10-18 | 32 of 37 |  |
-| 2026-10-18 12:02:32 | 2026-10-18 | 32 of 37 |  |
+| 2026-10-18 11:16:22 | 2026-10-17 | 40 of 40 | Checked the earlier version of this day, when every simulated day shared one seed. The day was later regenerated as part of the five-week history (`docs/decisions.md` §16); history days are checked against their manifests and answer keys before training (`10_gap_risk_model.md`). |
+| 2026-10-18 12:01:04 | 2026-10-18 | 32 of 37 | Checked the earlier version of this day, when every simulated day shared one seed. The day was later regenerated as part of the five-week history (`docs/decisions.md` §16); history days are checked against their manifests and answer keys before training (`10_gap_risk_model.md`). |
+| 2026-10-18 12:02:32 | 2026-10-18 | 32 of 37 | Checked the earlier version of this day, when every simulated day shared one seed. The day was later regenerated as part of the five-week history (`docs/decisions.md` §16); history days are checked against their manifests and answer keys before training (`10_gap_risk_model.md`). |
 | 2026-10-18 12:10:20 | 2026-10-17 | 40 of 40 | Doesn't count. A job repair wasn't given the business date, so it checked the default, 2026-10-17, while gold held 2026-10-18. It passed only because the synthetic days share a seed. Validation now refuses to check a different day from the one gold holds (`09_daily_job_runs.md`). |
-| 2026-10-18 12:41:27 | 2026-10-18 | 36 of 40 |  |
-| 2026-10-18 12:43:06 | 2026-10-18 | 36 of 40 |  |
+| 2026-10-18 12:41:27 | 2026-10-18 | 36 of 40 | Checked the earlier version of this day, when every simulated day shared one seed. The day was later regenerated as part of the five-week history (`docs/decisions.md` §16); history days are checked against their manifests and answer keys before training (`10_gap_risk_model.md`). |
+| 2026-10-18 12:43:06 | 2026-10-18 | 36 of 40 | Checked the earlier version of this day, when every simulated day shared one seed. The day was later regenerated as part of the five-week history (`docs/decisions.md` §16); history days are checked against their manifests and answer keys before training (`10_gap_risk_model.md`). |
 | 2026-10-18 12:56:56 | 2026-10-19 | 40 of 40 |  |
 | 2026-10-18 13:38:13 | 2026-10-19 | 40 of 40 |  |
+| 2026-10-19 01:28:58 | 2026-10-19 | 43 of 43 |  |
+| 2026-10-19 02:35:51 | 2026-10-19 | 43 of 43 |  |
 
 ## Business date 2026-10-17: 40 of 40 checks passed
+
+_Checked the earlier version of this day, when every simulated day shared one seed. The day was later regenerated as part of the five-week history (`docs/decisions.md` §16); history days are checked against their manifests and answer keys before training (`10_gap_risk_model.md`)._
 
 | stage | metric | value | expected | passed | note |
 |---|---|---|---|---|---|
@@ -64,6 +68,8 @@ _Generated 2026-10-18 14:18 UTC by `scripts/collect_evidence.py` from the live w
 
 ## Business date 2026-10-18: 36 of 40 checks passed
 
+_Checked the earlier version of this day, when every simulated day shared one seed. The day was later regenerated as part of the five-week history (`docs/decisions.md` §16); history days are checked against their manifests and answer keys before training (`10_gap_risk_model.md`)._
+
 | stage | metric | value | expected | passed | note |
 |---|---|---|---|---|---|
 | raw | files_landed | 23 |  | true |  |
@@ -107,7 +113,7 @@ _Generated 2026-10-18 14:18 UTC by `scripts/collect_evidence.py` from the live w
 | lakebase | synced_exceptions | 205,834 | 205,834 | true |  |
 | lakebase | synced_rows | 5,400,000 | 5,400,000 | true | Lakebase copy for Shelf Scan |
 
-## Business date 2026-10-19: 40 of 40 checks passed
+## Business date 2026-10-19: 43 of 43 checks passed
 
 | stage | metric | value | expected | passed | note |
 |---|---|---|---|---|---|
@@ -125,8 +131,8 @@ _Generated 2026-10-18 14:18 UTC by `scripts/collect_evidence.py` from the live w
 | bronze | rows_supplier_master | 120 | 120 | true | matches the source manifest |
 | bronze | rows_waste | 190,123 | 190,123 | true | matches the source manifest |
 | silver | duplicates_removed | 3,813 | 3,813 | true | re-sent delivery lines |
-| silver | expectation_violations | 1,560 |  | true | dropped rows plus warnings (over-deliveries are kept and flagged) |
-| silver | expectations_evaluated | 38 |  | true | pipeline update a44b1835-b06a-4ce4-b676-3b9d3d469fe2 |
+| silver | expectation_violations | 18,720 |  | true | dropped rows plus warnings (over-deliveries are kept and flagged) |
+| silver | expectations_evaluated | 46 |  | true | pipeline update 4af604b5-aa13-4b1d-80af-676c4a46ed2e |
 | silver | rows_dropped | 120 | 120 | true | malformed delivery lines: no store, bad barcode or negative units |
 | gold | answer_key_matches | 205,834 | 205,834 | true | status, low type, root cause, short type and all six quantities, row by row |
 | gold | attributed_pct | 98 |  | true | share of gaps and lows with a confirmed root cause |
@@ -151,4 +157,7 @@ _Generated 2026-10-18 14:18 UTC by `scripts/collect_evidence.py` from the live w
 | governance | metric_view_gap_rate_pct | 2.48 | 2.48 | true | metric view agrees with the table |
 | lakebase | synced_exceptions | 205,834 | 205,834 | true |  |
 | lakebase | synced_rows | 5,400,000 | 5,400,000 | true | Lakebase copy for Shelf Scan |
+| ml | feature_gaps_match_gold | 93,319 | 93,319 | true | unplanned gaps in the features agree with gold |
+| ml | feature_history_days | 36 |  | true | days of features; scoring needs the last 7 |
+| ml | feature_rows | 5,400,000 | 5,400,000 | true | one row of gap-risk features per product-location |
 

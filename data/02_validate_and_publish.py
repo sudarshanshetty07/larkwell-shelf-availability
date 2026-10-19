@@ -12,6 +12,7 @@
 # MAGIC | Gold | Headline counts, the reason mix, and a row-by-row match against the answer key; hard constraints held |
 # MAGIC | Governance | The metric view's gap rate agrees with the table |
 # MAGIC | Lakebase | The synced copy matches gold |
+# MAGIC | ML | The gap-risk features cover every product-location and agree with gold |
 # MAGIC
 # MAGIC Every result is written to `ops.pipeline_checks`, which the app's Data Journey tab reads.
 # MAGIC The run fails if any check fails.
@@ -160,6 +161,20 @@ lb = one(f"""SELECT COUNT(*) AS n, SUM(CASE WHEN issue <> 'NO_ISSUE' THEN 1 ELSE
     FROM {LB_CATALOG}.serving.product_location_status""")
 check(6, "lakebase", "synced_rows", lb.n, g.pls, note="Lakebase copy for Shelf Scan")
 check(6, "lakebase", "synced_exceptions", lb.exceptions, g.gaps + g.lows)
+
+# COMMAND ----------
+
+# MAGIC %md ## The gap-risk model's inputs
+
+# COMMAND ----------
+
+F = f"{CATALOG}.ml.gap_risk_features"
+fr = one(f"SELECT COUNT(*) AS n, SUM(is_gap) AS gaps FROM {F} WHERE business_date = '{BUSINESS_DATE}'")
+unplanned = one(f"SELECT COUNT(*) AS n FROM {G} WHERE issue = 'GAP' AND consensus_reason <> 'KNOWN_GAP'").n
+history = one(f"SELECT COUNT(DISTINCT business_date) AS n FROM {F} WHERE business_date <= '{BUSINESS_DATE}'").n
+check(7, "ml", "feature_rows", fr.n, g.pls, note="one row of gap-risk features per product-location")
+check(7, "ml", "feature_gaps_match_gold", fr.gaps, unplanned, note="unplanned gaps in the features agree with gold")
+check(7, "ml", "feature_history_days", history, passed=history >= 7, note="days of features; scoring needs the last 7")
 
 # COMMAND ----------
 

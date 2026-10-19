@@ -1,12 +1,13 @@
-# Demo script: tell, show, tell (about 15 minutes, plus questions)
+# Demo script: tell, show, tell (about 17 minutes, plus questions)
 
 The audience is the executive who funds the decision (a Chief Operating Officer) and the architect or data lead who has to live with it.
 Larkwell Foods is fictitious and all data is synthetic.
 
 **Before you start, open:**
-- the app on the **Gaps/Lows Dashboard** (Head Office, Store view);
+- the app on the **Gaps/Lows Dashboard** (Support Centre, Store view);
 - a second tab on **Shelf Scan** with Covent Garden selected;
 - **AI Chat Assistant**;
+- **Morning Briefing** with Covent Garden selected, scrolled to **Tomorrow morning**;
 - **Data Journey**;
 - the deck at the value slide.
 
@@ -15,8 +16,8 @@ Larkwell Foods is fictitious and all data is synthetic.
 **Tell:**
 > "Larkwell Foods runs 900 food stores and sells about £8bn a year. Every morning it opens with around 206,000 shelves empty or low.
 > On the ones it can fix, about a million pounds of that day's sales is at risk. Today the cause is found by hand, the next day, if at all.
-> I'll show you three moments. At 6am, head office sees what's wrong and why. A colleague fixes it at the shelf. And you can see that it got done.
-> Then I'll show you how it's built, and what it's worth."
+> I'll show you four moments. At 6am, head office sees what's wrong and why. A colleague fixes it at the shelf. You can see that it got done.
+> And before close, the store sees which shelves will be empty tomorrow. Then I'll show you how it's built, and what it's worth."
 
 ## 1. Head office sees what's wrong, and why (3 minutes)
 
@@ -62,7 +63,22 @@ Larkwell Foods is fictitious and all data is synthetic.
 **Tell:**
 > "Plain English, on one governed definition of every KPI. And what happened in the store a minute ago is already in the lakehouse."
 
-## 4. How it's built (3 minutes; go deeper for the architect)
+## 4. Before close: tomorrow's empty shelves, flagged today (2 minutes)
+
+**Tell:** "Everything so far explains this morning. This looks at tomorrow."
+
+**Show:**
+- **Morning Briefing**, Covent Garden, the **Tomorrow morning** section. A machine-learning model scored every ranged line for tomorrow morning.
+- The first list is lines that **look fine now but are likely to be empty in the morning**, each with its reasons in plain English, for example "Today's delivery came 6 short" or "Empty or low on 3 of the last 7 days".
+- The second list is **today's gaps and lows most likely to still be empty tomorrow**: fix those first.
+- The line above the lists: how yesterday's list for this store did this morning.
+- Optional: **Data Journey**, stage 6 (Predicted), or the curated chat question *"Which lines look fine now but are most likely to be empty tomorrow morning?"*
+
+**Tell:**
+> "Tested on a week it never saw, 60% of each store's top 25 were empty the next morning, against 46% for 'what's empty or low today'.
+> On lines that look fine today, it's 12.4% against 2.2%. Only a version that beats both rules is used, and it's graded every morning."
+
+## 5. How it's built (3 minutes; go deeper for the architect)
 
 **Show:** the **Data Journey** tab, then the architecture slide.
 
@@ -71,7 +87,7 @@ Larkwell Foods is fictitious and all data is synthetic.
 **Tell (architect altitude):**
 - **Lakeflow:**
   - Auto Loader ingests 10 feeds.
-  - Silver enforces 38 expectations and drops exactly the 120 malformed lines.
+  - Silver enforces its expectations (46 across the pipeline) and drops exactly the 120 malformed lines.
   - Gold applies the eight-step root-cause cascade.
   - An answer key proves all 205,834 exceptions are right.
 - **Unity Catalog:**
@@ -83,12 +99,17 @@ Larkwell Foods is fictitious and all data is synthetic.
   - a synced copy for millisecond lookups;
   - app writes go to Postgres;
   - Lakehouse Sync streams them back.
+- **Machine learning:**
+  - the pipeline builds 34 features per line per day, so training and scoring share one definition;
+  - LightGBM, trained in MLflow on three weeks and tested on the next;
+  - registered in Unity Catalog, and only a version that passes every gate gets the `champion` alias;
+  - the daily job grades yesterday's predictions, then scores tomorrow.
 - **AI:**
   - the LLM only words the playbook action;
   - an MLflow evaluation on 48 cases runs daily;
   - Genie is benchmarked 12/12.
 
-## 5. Value, plan and the ask (2 minutes, on the slides)
+## 6. Value, plan and the ask (2 minutes, on the slides)
 
 **Tell:**
 - **For you (COO):**

@@ -62,11 +62,32 @@ This is capacity given back to stores for replenishment and customers, not a hea
 
 These turn into supplier service-level conversations, a depot fix and forecast tuning. I don't put a single figure on them here.
 
+## Upside not counted in the base case: preventing tomorrow's gaps (gap-risk model)
+
+The gap-risk model gives every store, the day before, its 25 lines most likely to be empty the next morning. Its measured
+skill (DATA, the unseen test week in `evidence/10_gap_risk_model.md`):
+- **60%** of the lines on those lists were empty the next morning, against 46% for "what's empty or low today";
+- among lines that **looked fine** the day before, **12.4%** of the listed ones were empty, against 2.2% for "lowest stock first" and about 0.8% for any line.
+
+What that could be worth, as an illustration only:
+
+| Input | Value | Source |
+|---|---|---|
+| Lines that look fine but go empty, caught by each store's looks-fine list of 25 | about 3 a store a day, about 2,800 across 900 stores | DATA: list precision x 25 x 900 |
+| Share of those an evening check prevents | 50% | ASSUMPTION |
+| Controllable sales at risk per gap or low | about £8.58 a day (£1.09m over 127,010) | DATA |
+| Share of at-risk demand lost to the retailer | 40% | PUBLIC (as above) |
+| **Sales recovered a year** | **about £1.7m** | Calculated |
+
+That's small next to the base case, and I don't add it to the £23.7m: the pilot measures it, against control stores. The model's
+bigger contribution is to the base case's own lever. It orders today's gaps and lows by how likely they are to still be empty
+tomorrow, so the fixes that matter most come first.
+
 ## Cost to run (indicative)
 
 | Component | Assumption | Estimate a year |
 |---|---|---|
-| Lakeflow pipeline and daily job | Serverless, about 10 minutes a day | Low thousands of pounds |
+| Lakeflow pipeline, daily job and the gap-risk model | Serverless, about 20 minutes a day, plus a weekly retrain | Low thousands of pounds |
 | Lakebase | Autoscaling 1-8 CU, about 2 CU on average | Under £10k |
 | Databricks App | One medium app, always on | Under £10k |
 | SQL warehouse for dashboards and Genie | Shared serverless warehouse, business hours | £10k-£20k |
